@@ -1,0 +1,14 @@
+{
+  "name": "trackiano",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/bot.js",
+  "scripts": {
+    "start": "node src/bot.js"
+  },
+  "dependencies": {
+    "@notionhq/client": "^2.2.15",
+    "dotenv": "^16.4.5",
+    "grammy": "^1.26.0"
+  }
+}
