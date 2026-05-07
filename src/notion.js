@@ -47,6 +47,51 @@ export async function getMonthlyExpenses() {
   return totals;
 }
 
+export async function getTotalSpentInPeriod(periodStart) {
+  const startStr = periodStart.toISOString().split('T')[0];
+  const response = await notion.databases.query({
+    database_id: EXPENSES_DB_ID,
+    filter: { property: 'date', date: { on_or_after: startStr } },
+  });
+  return response.results.reduce((sum, page) => sum + (page.properties.amount?.number ?? 0), 0);
+}
+
+export async function getTotalSpentToday() {
+  const today = new Date().toISOString().split('T')[0];
+  const response = await notion.databases.query({
+    database_id: EXPENSES_DB_ID,
+    filter: { property: 'date', date: { equals: today } },
+  });
+  return response.results.reduce((sum, page) => sum + (page.properties.amount?.number ?? 0), 0);
+}
+
+export async function getCategoryExpenses(categoryId, periodStart) {
+  const startStr = periodStart.toISOString().split('T')[0];
+  const response = await notion.databases.query({
+    database_id: EXPENSES_DB_ID,
+    filter: {
+      and: [
+        { property: 'date', date: { on_or_after: startStr } },
+        { property: 'budget', relation: { contains: categoryId } },
+      ],
+    },
+  });
+  return response.results.map((page) => ({
+    description: page.properties.description?.title?.[0]?.plain_text ?? '',
+    amount: page.properties.amount?.number ?? 0,
+  }));
+}
+
+export async function createBudget(name, amount) {
+  await notion.pages.create({
+    parent: { database_id: BUDGETS_DB_ID },
+    properties: {
+      budget: { title: [{ text: { content: name } }] },
+      amount: { number: amount },
+    },
+  });
+}
+
 export async function createExpense({ description, amount, budgetId }) {
   await notion.pages.create({
     parent: { database_id: EXPENSES_DB_ID },
