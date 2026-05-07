@@ -1,26 +1,48 @@
 # Trackiano
 
-Telegram bot que registra gastos en Notion.
+Telegram bot that logs expenses to Notion.
 
-## Uso
+## Usage
 
-Mandá un mensaje al bot con el formato:
+Send a message with the format:
 ```
-{descripcion} {monto} {categoria}
+{description} {amount} {category}
 ```
-Ejemplo: `cafe 50 living`
+Example: `coffee 50 food`
 
-## Comandos
+## Commands
 
-- `/categorias` — lista todas las categorías disponibles
-- `/saldo <categoria>` — muestra el saldo de una categoría
-- `/resumen` — gastos del mes por categoría
+**Queries**
+- `/budget <category>` — daily allowance based on remaining balance and days until payday
+- `/budget <category> detalle` — list all expenses for the current pay period
+- `/saldo <category>` — remaining balance for a category
+- `/resumen` — monthly expenses by category
+- `/categorias` — list all available categories
+
+**Management**
+- `/nueva <name> <amount>` — create a new budget category in Notion
+- `/help` — show all available commands
+
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `TELEGRAM_TOKEN` | ✓ | Telegram bot token |
+| `TELEGRAM_OWNER_ID` | ✓ | Your Telegram user ID (only you can use the bot) |
+| `NOTION_TOKEN` | ✓ | Notion integration token |
+| `NOTION_EXPENSES_DB_ID` | ✓ | Notion expenses database ID |
+| `NOTION_BUDGETS_DB_ID` | ✓ | Notion budgets database ID |
+| `PAY_DATE_DAY` | — | Day of month for payday (defaults to last day of month) |
 
 ## Setup
 
 ```bash
 npm install
 cp .env.example .env
-# completar las variables en .env
+# fill in the variables
 node src/bot.js
 ```
+
+## Deploy
+
+Deployed on Railway as a standalone service.
