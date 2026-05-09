@@ -22,39 +22,39 @@ bot.use((ctx, next) => {
 
 bot.command('help', async (ctx) => {
   await ctx.reply(
-    `Comandos disponibles:\n\n` +
-    `*Cargar gasto*\n` +
-    `descripcion monto categoria\n\n` +
-    `*Consultas*\n` +
-    `/saldo <categoría> — saldo restante de una categoría\n` +
-    `/budget <categoría> — cuánto podés gastar por día\n` +
-    `/budget <categoría> detalle — lista de gastos del período\n` +
-    `/resumen — todos los gastos del mes\n` +
-    `/categorias — categorías disponibles\n\n` +
-    `*Gestión*\n` +
-    `/nueva <nombre> <monto> — crear nueva categoría`,
+    `Available commands:\n\n` +
+    `*Log expense*\n` +
+    `description amount category\n\n` +
+    `*Queries*\n` +
+    `/balance <category> — remaining balance for a category\n` +
+    `/budget <category> — how much you can spend per day\n` +
+    `/budget <category> detail — expense list for the current period\n` +
+    `/summary — all expenses this month\n` +
+    `/categories — available categories\n\n` +
+    `*Management*\n` +
+    `/new <name> <amount> — create a new category`,
     { parse_mode: 'Markdown' }
   );
 });
 
-bot.command('categorias', async (ctx) => {
+bot.command('categories', async (ctx) => {
   const budgets = await getBudgets();
   const lines = budgets.map((b) => `• ${b.name}`).join('\n');
-  await ctx.reply(`Categorías disponibles:\n${lines}`);
+  await ctx.reply(`Available categories:\n${lines}`);
 });
 
-bot.command('saldo', async (ctx) => {
+bot.command('balance', async (ctx) => {
   const category = ctx.match.trim();
-  if (!category) return ctx.reply('Uso: /saldo <categoría>');
+  if (!category) return ctx.reply('Usage: /balance <category>');
 
   const budgets = await getBudgets();
   const budget = budgets.find((b) => b.name.toLowerCase() === category.toLowerCase());
-  if (!budget) return ctx.reply(`Categoría '${category}' no encontrada.`);
+  if (!budget) return ctx.reply(`Category '${category}' not found.`);
 
-  await ctx.reply(`${budget.name}\nPresupuesto: $${budget.amount}\nGastado: $${budget.totalSpent}\nRestante: $${budget.remaining}`);
+  await ctx.reply(`${budget.name}\nBudget: $${budget.amount}\nSpent: $${budget.totalSpent}\nRemaining: $${budget.remaining}`);
 });
 
-bot.command('resumen', async (ctx) => {
+bot.command('summary', async (ctx) => {
   const [budgets, totals] = await Promise.all([getBudgets(), getMonthlyExpenses()]);
   const budgetMap = Object.fromEntries(budgets.map((b) => [b.id, b.name]));
 
@@ -64,42 +64,42 @@ bot.command('resumen', async (ctx) => {
   });
 
   const total = Object.values(totals).reduce((a, b) => a + b, 0);
-  await ctx.reply(lines.length ? `Gastos del mes:\n${lines.join('\n')}\n\nTotal: $${total}` : 'Sin gastos este mes.');
+  await ctx.reply(lines.length ? `Monthly expenses:\n${lines.join('\n')}\n\nTotal: $${total}` : 'No expenses this month.');
 });
 
 bot.command('budget', async (ctx) => {
   const parts = ctx.match.trim().split(/\s+/);
-  if (!parts[0]) return ctx.reply('Uso: /budget <categoría> [detalle]');
+  if (!parts[0]) return ctx.reply('Usage: /budget <category> [detail]');
 
-  const isDetalle = parts[parts.length - 1] === 'detalle';
-  const categoryName = isDetalle ? parts.slice(0, -1).join(' ') : parts.join(' ');
+  const isDetail = parts[parts.length - 1] === 'detail';
+  const categoryName = isDetail ? parts.slice(0, -1).join(' ') : parts.join(' ');
 
   const budgets = await getBudgets();
   const budget = budgets.find((b) => b.name.toLowerCase() === categoryName.toLowerCase());
-  if (!budget) return ctx.reply(`Categoría '${categoryName}' no encontrada.`);
+  if (!budget) return ctx.reply(`Category '${categoryName}' not found.`);
 
-  if (isDetalle) {
+  if (isDetail) {
     const expenses = await getCategoryExpenses(budget.id, getPeriodStart());
-    if (!expenses.length) return ctx.reply(`Sin gastos en ${budget.name} este período.`);
+    if (!expenses.length) return ctx.reply(`No expenses in ${budget.name} this period.`);
     const lines = expenses.map((e) => `• ${e.description} — $${e.amount}`).join('\n');
-    await ctx.reply(`${budget.name} — detalle:\n${lines}`);
+    await ctx.reply(`${budget.name} — detail:\n${lines}`);
   } else {
     const days = daysUntilPayday();
     const dailyAllowance = Math.round(budget.remaining / days);
-    await ctx.reply(`${budget.name}\nRestante: $${budget.remaining}\nFaltan: ${days} días\n→ $${dailyAllowance}/día`);
+    await ctx.reply(`${budget.name}\nRemaining: $${budget.remaining}\nDays left: ${days}\n→ $${dailyAllowance}/day`);
   }
 });
 
-bot.command('nueva', async (ctx) => {
+bot.command('new', async (ctx) => {
   const parts = ctx.match.trim().split(/\s+/);
-  if (parts.length < 2) return ctx.reply('Uso: /nueva <nombre> <monto>');
+  if (parts.length < 2) return ctx.reply('Usage: /new <name> <amount>');
 
   const amount = Number(parts[parts.length - 1]);
-  if (isNaN(amount)) return ctx.reply('El monto tiene que ser un número.');
+  if (isNaN(amount)) return ctx.reply('Amount must be a number.');
 
   const name = parts.slice(0, -1).join(' ');
   await createBudget(name, amount);
-  await ctx.reply(`✓ Categoría '${name}' creada con $${amount}`);
+  await ctx.reply(`✓ Category '${name}' created with $${amount}`);
 });
 
 bot.on('message:text', async (ctx) => {
@@ -107,12 +107,12 @@ bot.on('message:text', async (ctx) => {
     const { description, amount, category } = parseMessage(ctx.message.text);
 
     const budgetId = await findBudgetId(category);
-    if (!budgetId) return ctx.reply(`Categoría '${category}' no encontrada. Revisá /categorias.`);
+    if (!budgetId) return ctx.reply(`Category '${category}' not found. Check /categories.`);
 
     await createExpense({ description, amount, budgetId });
 
     const totalToday = await getTotalSpentToday();
-    await ctx.reply(`Cargado ✓\nLlevás $${totalToday} hoy`);
+    await ctx.reply(`Logged ✓\nYou've spent $${totalToday} today`);
   } catch (err) {
     if (err.message.startsWith('Format:') || err.message.includes('is not a valid amount')) {
       return ctx.reply(err.message);
