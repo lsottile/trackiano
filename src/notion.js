@@ -99,6 +99,25 @@ export async function createBudget(name, amount) {
   });
 }
 
+export async function getLastExpense() {
+  const response = await notion.databases.query({
+    database_id: EXPENSES_DB_ID,
+    sorts: [{ timestamp: 'created_time', direction: 'descending' }],
+    page_size: 1,
+  });
+  if (!response.results.length) return null;
+  const page = response.results[0];
+  return {
+    id: page.id,
+    description: page.properties.description?.title?.[0]?.plain_text ?? '',
+    amount: page.properties.amount?.number ?? 0,
+  };
+}
+
+export async function deleteExpense(pageId) {
+  await notion.pages.update({ page_id: pageId, archived: true });
+}
+
 export async function createExpense({ description, amount, budgetId }) {
   await notion.pages.create({
     parent: { database_id: EXPENSES_DB_ID },

@@ -9,6 +9,8 @@ import {
   getTotalSpentToday,
   getCategoryExpenses,
   createBudget,
+  getLastExpense,
+  deleteExpense,
 } from './notion.js';
 import { getPeriodStart, daysUntilPayday } from './pay.js';
 
@@ -32,7 +34,8 @@ bot.command('help', async (ctx) => {
     `/summary — all expenses this month\n` +
     `/categories — available categories\n\n` +
     `*Management*\n` +
-    `/new <name> <amount> — create a new category`,
+    `/new <name> <amount> — create a new category\n` +
+    `/delete — delete the last logged expense`,
     { parse_mode: 'Markdown' }
   );
 });
@@ -88,6 +91,13 @@ bot.command('budget', async (ctx) => {
     const dailyAllowance = Math.round(budget.remaining / days);
     await ctx.reply(`${budget.name}\nRemaining: $${budget.remaining}\nDays left: ${days}\n→ $${dailyAllowance}/day`);
   }
+});
+
+bot.command('delete', async (ctx) => {
+  const expense = await getLastExpense();
+  if (!expense) return ctx.reply('No expenses found.');
+  await deleteExpense(expense.id);
+  await ctx.reply(`Deleted ✓\n${expense.description} — $${expense.amount}`);
 });
 
 bot.command('new', async (ctx) => {
