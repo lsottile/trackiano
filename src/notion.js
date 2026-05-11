@@ -14,22 +14,18 @@ export async function findBudgetId(categoryName) {
   return match?.id ?? null;
 }
 
-function getNumber(prop) {
-  if (!prop) return 0;
-  if (prop.type === 'formula') return prop.formula?.number ?? 0;
-  if (prop.type === 'rollup') return prop.rollup?.number ?? 0;
-  return prop.number ?? 0;
-}
-
 export async function getBudgets() {
   const response = await notion.databases.query({ database_id: BUDGETS_DB_ID });
   return response.results.map((page) => ({
     id: page.id,
     name: page.properties.budget?.title?.[0]?.plain_text ?? '',
     amount: page.properties.amount?.number ?? 0,
-    totalSpent: getNumber(page.properties['total spent']),
-    remaining: getNumber(page.properties.remaining),
   }));
+}
+
+export async function getPeriodSpent(categoryId, periodStart) {
+  const expenses = await getCategoryExpenses(categoryId, periodStart);
+  return expenses.reduce((sum, e) => sum + e.amount, 0);
 }
 
 export async function getMonthlyExpenses() {

@@ -8,6 +8,7 @@ import {
   getMonthlyExpenses,
   getTotalSpentToday,
   getCategoryExpenses,
+  getPeriodSpent,
   createBudget,
   getLastExpense,
   deleteExpense,
@@ -54,7 +55,9 @@ bot.command('balance', async (ctx) => {
   const budget = budgets.find((b) => b.name.toLowerCase() === category.toLowerCase());
   if (!budget) return ctx.reply(`Category '${category}' not found.`);
 
-  await ctx.reply(`${budget.name}\nBudget: $${budget.amount}\nSpent: $${budget.totalSpent}\nRemaining: $${budget.remaining}`);
+  const spent = await getPeriodSpent(budget.id, getPeriodStart());
+  const remaining = budget.amount - spent;
+  await ctx.reply(`${budget.name}\nBudget: $${budget.amount}\nSpent: $${spent}\nRemaining: $${remaining}`);
 });
 
 bot.command('summary', async (ctx) => {
@@ -87,9 +90,11 @@ bot.command('budget', async (ctx) => {
     const lines = expenses.map((e) => `• ${e.description} — $${e.amount}`).join('\n');
     await ctx.reply(`${budget.name} — detail:\n${lines}`);
   } else {
+    const spent = await getPeriodSpent(budget.id, getPeriodStart());
+    const remaining = budget.amount - spent;
     const days = daysUntilPayday();
-    const dailyAllowance = Math.round(budget.remaining / days);
-    await ctx.reply(`${budget.name}\nRemaining: $${budget.remaining}\nDays left: ${days}\n→ $${dailyAllowance}/day`);
+    const dailyAllowance = Math.round(remaining / days);
+    await ctx.reply(`${budget.name}\nRemaining: $${remaining}\nDays left: ${days}\n→ $${dailyAllowance}/day`);
   }
 });
 
