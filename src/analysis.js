@@ -4,12 +4,38 @@ import { daysUntilPayday } from "./pay.js";
 
 const client = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-const BASE_PROMPT =
-  "Sos un asistente de finanzas personales. Analizás gastos mensuales y dás consejos concretos. Respondé siempre en español, de forma clara y concisa. No más de 3 párrafos cortos.";
+const SYSTEM_PROMPT = `Sos un asistente de finanzas personales. Tu objetivo es ayudar al usuario a ahorrar entre $300 y $500 USD por mes para invertir en S&P500.
 
-const SYSTEM_PROMPT = process.env.USER_CONTEXT
-  ? `${BASE_PROMPT}\n\nContexto del usuario: ${process.env.USER_CONTEXT}`
-  : BASE_PROMPT;
+Contexto del usuario: trabajador remoto (mezcla casa/coworking), con pareja, sin auto ni hijos. Ingreso mensual aproximado: $4200 USD.
+
+Reglas de respuesta:
+- Sé conciso y directo. Sin introducción, sin cierre, sin frases de relleno.
+- Usá viñetas, no párrafos.
+- Todos los montos están en USD.`;
+
+const BREAKDOWN_FORMAT = `Respondé con este formato exacto:
+
+**Categorías con mayor gasto:**
+- [categoría]: $X (Y% del total)
+- [categoría]: $X (Y% del total)
+- [categoría]: $X (Y% del total)
+
+**Gastos puntuales más altos:**
+- [descripción] ([categoría]): $X
+- [descripción] ([categoría]): $X
+- [descripción] ([categoría]): $X
+
+**Ritmo de gasto:**
+[1 línea: si el ritmo es sostenible o no para lo que queda del período, con números concretos]`;
+
+const IMPROVE_FORMAT = `Respondé con este formato exacto:
+
+**Para ahorrar $300-500 USD este mes:**
+- [consejo concreto con número]: ahorrás $X
+- [consejo concreto con número]: ahorrás $X
+- [consejo concreto con número]: ahorrás $X
+
+**Resumen:** [1 línea con cuánto podrías ahorrar si aplicás los 3 consejos]`;
 
 export async function analyzeExpenses(mode = "breakdown") {
   const [budgets, expenses] = await Promise.all([
@@ -55,17 +81,14 @@ export async function analyzeExpenses(mode = "breakdown") {
     `Gastos del mes actual:\n\nPor categoría:\n${categoryLines.join("\n")}\n\n` +
     `Total gastado: $${total}\n\nGastos individuales más altos:\n${topExpenses.join("\n")}`;
 
-  const instruction =
-    mode === "improve"
-      ? "Con base en estos datos, dá 3 consejos concretos y específicos para ahorrar el mes que viene. Indicá en qué categorías o gastos puntuales hay margen real de ahorro y cuánto se podría ahorrar aproximadamente."
-      : "Analizá brevemente la distribución. Destacá qué categorías pesan más, cuáles gastos puntuales son los más altos, y si el ritmo de gasto es sostenible para lo que queda del período.";
+  const format = mode === "improve" ? IMPROVE_FORMAT : BREAKDOWN_FORMAT;
 
   const response = await client.chat.completions.create({
     model: "llama-3.3-70b-versatile",
     max_tokens: 512,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: `${context}\n\n${instruction}` },
+      { role: "user", content: `${context}\n\n${format}` },
     ],
   });
 
