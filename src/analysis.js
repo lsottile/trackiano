@@ -1,8 +1,8 @@
-import { GoogleGenAI } from "@google/genai";
+import Groq from "groq-sdk";
 import { getMonthlyExpensesWithDetails, getBudgets } from "./notion.js";
 import { daysUntilPayday } from "./pay.js";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const client = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 const BASE_PROMPT =
   "Sos un asistente de finanzas personales. Analizás gastos mensuales y dás consejos concretos. Respondé siempre en español, de forma clara y concisa. No más de 3 párrafos cortos.";
@@ -48,11 +48,10 @@ export async function analyzeExpenses(mode = "breakdown") {
     });
 
   const today = new Date();
-  const dayOfMonth = today.getDate();
   const daysLeft = daysUntilPayday();
 
   const context =
-    `Contexto: hoy es día ${dayOfMonth} del mes, faltan ${daysLeft} días para el próximo cobro.\n\n` +
+    `Contexto: hoy es día ${today.getDate()} del mes, faltan ${daysLeft} días para el próximo cobro.\n\n` +
     `Gastos del mes actual:\n\nPor categoría:\n${categoryLines.join("\n")}\n\n` +
     `Total gastado: $${total}\n\nGastos individuales más altos:\n${topExpenses.join("\n")}`;
 
@@ -61,14 +60,14 @@ export async function analyzeExpenses(mode = "breakdown") {
       ? "Con base en estos datos, dá 3 consejos concretos y específicos para ahorrar el mes que viene. Indicá en qué categorías o gastos puntuales hay margen real de ahorro y cuánto se podría ahorrar aproximadamente."
       : "Analizá brevemente la distribución. Destacá qué categorías pesan más, cuáles gastos puntuales son los más altos, y si el ritmo de gasto es sostenible para lo que queda del período.";
 
-  const response = await ai.models.generateContent({
-    model: "gemini-2.0-flash",
-    contents: `${context}\n\n${instruction}`,
-    config: {
-      systemInstruction: SYSTEM_PROMPT,
-      maxOutputTokens: 512,
-    },
+  const response = await client.chat.completions.create({
+    model: "llama-3.3-70b-versatile",
+    max_tokens: 512,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: `${context}\n\n${instruction}` },
+    ],
   });
 
-  return response.text;
+  return response.choices[0].message.content;
 }
