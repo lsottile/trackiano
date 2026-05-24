@@ -1,12 +1,12 @@
 import "dotenv/config";
 import { Bot } from "grammy";
 import { parseMessage } from "./parseMessage.js";
-import { analyzeExpenses, askFollowUp } from "./analysis.js";
 import {
   findBudgetId,
   createExpense,
   getBudgets,
   getMonthlyExpenses,
+  getMonthlyExpensesWithDetails,
   getTotalSpentToday,
   getCategoryExpenses,
   getPeriodSpent,
@@ -32,13 +32,10 @@ bot.command("help", async (ctx) => {
       `/budget <category> — how much you can spend per day\n` +
       `/budget <category> detail — expense list for the current period\n` +
       `/summary — all expenses this month\n` +
+      `/export — full data to paste into any AI\n` +
       `/categories — available categories\n\n` +
       `*Management*\n` +
-      `/new <name> <amount> — create a new category\n\n` +
-      `*AI*\n` +
-      `/analisis — category breakdown with percentages and top expenses\n` +
-      `/analisis mejora — same + tips to improve next month\n` +
-      `/ask <pregunta> — follow-up question about the last analysis`,
+      `/new <name> <amount> — create a new category`,
     { parse_mode: "Markdown" },
   );
 });
@@ -120,33 +117,57 @@ bot.command("budget", async (ctx) => {
   }
 });
 
-bot.command("analisis", async (ctx) => {
-  const arg = ctx.match.trim().toLowerCase();
-  const mode = arg === "mejora" ? "improve" : "breakdown";
-  await ctx.reply("Analizando tus gastos...");
-  try {
-    const analysis = await analyzeExpenses(mode);
-    await ctx.reply(analysis);
-  } catch (err) {
-    console.error("[analisis]", err);
-    await ctx.reply("No pude generar el análisis. Intentá de nuevo.");
-  }
-});
+bot.command("export", async (ctx) => {
+  const [budgets, expenses] = await Promise.all([
+    getBudgets(),
+    getMonthlyExpensesWithDetails(),
+  ]);
 
-bot.command("ask", async (ctx) => {
-  const question = ctx.match.trim();
-  if (!question) return ctx.reply("Usage: /ask <pregunta>");
+  const budgetMap = Object.fromEntries(
+    budgets.map((b) => [b.id, { name: b.name, budget: b.amount }]),
+  );
 
-  await ctx.reply("Consultando...");
-  try {
-    const answer = await askFollowUp(question);
-    await ctx.reply(answer);
-  } catch (err) {
-    console.error("[ask]", err);
-    if (err.message === "NO_CONTEXT")
-      return ctx.reply("Primero corré /analisis para tener contexto.");
-    await ctx.reply("No pude responder. Intentá de nuevo.");
+  const categoryTotals = {};
+  for (const e of expenses) {
+    categoryTotals[e.categoryId] = (categoryTotals[e.categoryId] ?? 0) + e.amount;
   }
+
+  const total = Object.values(categoryTotals).reduce((a, b) => a + b, 0);
+  const income = 4200;
+  const saved = income - total;
+  const savedPct = Math.round((saved / income) * 100);
+  const spentPct = Math.round((total / income) * 100);
+  const today = new Date();
+  const daysLeft = daysUntilPayday();
+
+  const categoryLines = Object.entries(categoryTotals)
+    .sort(([, a], [, b]) => b - a)
+    .map(([id, spent]) => {
+      const { name = id, budget = 0 } = budgetMap[id] ?? {};
+      const pctOfTotal = total > 0 ? Math.round((spent / total) * 100) : 0;
+      const pctOfBudget = budget > 0 ? Math.round((spent / budget) * 100) : "?";
+      const remaining = budget > 0 ? budget - spent : null;
+      const remainingStr = remaining !== null ? `, resta $${remaining}` : "";
+      return `- ${name}: $${spent} (${pctOfTotal}% del total, ${pctOfBudget}% del presupuesto${remainingStr})`;
+    });
+
+  const topExpenses = [...expenses]
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, 10)
+    .map((e) => {
+      const name = budgetMap[e.categoryId]?.name ?? e.categoryId;
+      return `- ${e.description} (${name}): $${e.amount}`;
+    });
+
+  const text =
+    `📊 Gastos — ${today.toLocaleDateString("es-AR", { month: "long", year: "numeric" })}\n` +
+    `Día ${today.getDate()} del mes · ${daysLeft} días hasta el próximo cobro\n\n` +
+    `💰 Ingreso: $${income} | Gastado: $${total} (${spentPct}%) | Ahorrado: $${saved} (${savedPct}%)\n` +
+    `Meta de ahorro: $300–500 USD para S&P500\n\n` +
+    `Por categoría:\n${categoryLines.join("\n")}\n\n` +
+    `Top gastos individuales:\n${topExpenses.join("\n")}`;
+
+  await ctx.reply(text);
 });
 
 bot.command("new", async (ctx) => {
