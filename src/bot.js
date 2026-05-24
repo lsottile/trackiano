@@ -121,6 +121,7 @@ bot.command("analisis", async (ctx) => {
     const analysis = await analyzeExpenses(mode);
     await ctx.reply(analysis);
   } catch (err) {
+    console.error("[analisis]", err);
     await ctx.reply("No pude generar el análisis. Intentá de nuevo.");
   }
 });
