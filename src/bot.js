@@ -133,12 +133,13 @@ bot.command("export", async (ctx) => {
   }
 
   const total = Object.values(categoryTotals).reduce((a, b) => a + b, 0);
-  const income = 4200;
-  const saved = income - total;
-  const savedPct = Math.round((saved / income) * 100);
-  const spentPct = Math.round((total / income) * 100);
+  const income = Number(process.env.MONTHLY_INCOME) || null;
   const today = new Date();
   const daysLeft = daysUntilPayday();
+
+  const incomeStr = income
+    ? `Ingreso: $${income} | Gastado: $${total} (${Math.round((total / income) * 100)}%) | Ahorrado: $${income - total} (${Math.round(((income - total) / income) * 100)}%)`
+    : `Total gastado: $${total}`;
 
   const categoryLines = Object.entries(categoryTotals)
     .sort(([, a], [, b]) => b - a)
@@ -162,8 +163,7 @@ bot.command("export", async (ctx) => {
   const text =
     `📊 Gastos — ${today.toLocaleDateString("es-AR", { month: "long", year: "numeric" })}\n` +
     `Día ${today.getDate()} del mes · ${daysLeft} días hasta el próximo cobro\n\n` +
-    `💰 Ingreso: $${income} | Gastado: $${total} (${spentPct}%) | Ahorrado: $${saved} (${savedPct}%)\n` +
-    `Meta de ahorro: $300–500 USD para S&P500\n\n` +
+    `💰 ${incomeStr}\n\n` +
     `Por categoría:\n${categoryLines.join("\n")}\n\n` +
     `Top gastos individuales:\n${topExpenses.join("\n")}`;
 
