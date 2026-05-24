@@ -1,8 +1,8 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenAI } from "@google/genai";
 import { getMonthlyExpensesWithDetails, getBudgets } from "./notion.js";
 import { daysUntilPayday } from "./pay.js";
 
-const client = new Anthropic();
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 const BASE_PROMPT =
   "Sos un asistente de finanzas personales. Analizás gastos mensuales y dás consejos concretos. Respondé siempre en español, de forma clara y concisa. No más de 3 párrafos cortos.";
@@ -61,23 +61,14 @@ export async function analyzeExpenses(mode = "breakdown") {
       ? "Con base en estos datos, dá 3 consejos concretos y específicos para ahorrar el mes que viene. Indicá en qué categorías o gastos puntuales hay margen real de ahorro y cuánto se podría ahorrar aproximadamente."
       : "Analizá brevemente la distribución. Destacá qué categorías pesan más, cuáles gastos puntuales son los más altos, y si el ritmo de gasto es sostenible para lo que queda del período.";
 
-  const message = await client.messages.create({
-    model: "claude-opus-4-7",
-    max_tokens: 512,
-    system: [
-      {
-        type: "text",
-        text: SYSTEM_PROMPT,
-        cache_control: { type: "ephemeral" },
-      },
-    ],
-    messages: [
-      {
-        role: "user",
-        content: `${context}\n\n${instruction}`,
-      },
-    ],
+  const response = await ai.models.generateContent({
+    model: "gemini-2.0-flash",
+    contents: `${context}\n\n${instruction}`,
+    config: {
+      systemInstruction: SYSTEM_PROMPT,
+      maxOutputTokens: 512,
+    },
   });
 
-  return message.content[0].text;
+  return response.text;
 }
