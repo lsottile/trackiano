@@ -4,6 +4,8 @@ import { daysUntilPayday } from "./pay.js";
 
 const client = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
+let lastConversation = null;
+
 const SYSTEM_PROMPT = `Sos un asistente de finanzas personales. Tu objetivo es ayudar al usuario a ahorrar entre $300 y $500 USD por mes para invertir en S&P500.
 
 Contexto del usuario: trabajador remoto (mezcla casa/coworking), con pareja, sin auto ni hijos. Ingreso mensual aproximado: $4200 USD.
@@ -83,14 +85,37 @@ export async function analyzeExpenses(mode = "breakdown") {
 
   const format = mode === "improve" ? IMPROVE_FORMAT : BREAKDOWN_FORMAT;
 
+  const messages = [
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: `${context}\n\n${format}` },
+  ];
+
   const response = await client.chat.completions.create({
     model: "llama-3.3-70b-versatile",
     max_tokens: 512,
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: `${context}\n\n${format}` },
-    ],
+    messages,
   });
 
-  return response.choices[0].message.content;
+  const text = response.choices[0].message.content;
+  lastConversation = [...messages, { role: "assistant", content: text }];
+  return text;
+}
+
+export async function askFollowUp(question) {
+  if (!lastConversation) {
+    const err = new Error("NO_CONTEXT");
+    throw err;
+  }
+
+  const messages = [...lastConversation, { role: "user", content: question }];
+
+  const response = await client.chat.completions.create({
+    model: "llama-3.3-70b-versatile",
+    max_tokens: 512,
+    messages,
+  });
+
+  const text = response.choices[0].message.content;
+  lastConversation = [...messages, { role: "assistant", content: text }];
+  return text;
 }

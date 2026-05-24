@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { Bot } from "grammy";
 import { parseMessage } from "./parseMessage.js";
-import { analyzeExpenses } from "./analysis.js";
+import { analyzeExpenses, askFollowUp } from "./analysis.js";
 import {
   findBudgetId,
   createExpense,
@@ -37,7 +37,8 @@ bot.command("help", async (ctx) => {
       `/new <name> <amount> — create a new category\n\n` +
       `*AI*\n` +
       `/analisis — category breakdown with percentages and top expenses\n` +
-      `/analisis mejora — same + tips to improve next month`,
+      `/analisis mejora — same + tips to improve next month\n` +
+      `/ask <pregunta> — follow-up question about the last analysis`,
     { parse_mode: "Markdown" },
   );
 });
@@ -129,6 +130,22 @@ bot.command("analisis", async (ctx) => {
   } catch (err) {
     console.error("[analisis]", err);
     await ctx.reply("No pude generar el análisis. Intentá de nuevo.");
+  }
+});
+
+bot.command("ask", async (ctx) => {
+  const question = ctx.match.trim();
+  if (!question) return ctx.reply("Usage: /ask <pregunta>");
+
+  await ctx.reply("Consultando...");
+  try {
+    const answer = await askFollowUp(question);
+    await ctx.reply(answer);
+  } catch (err) {
+    console.error("[ask]", err);
+    if (err.message === "NO_CONTEXT")
+      return ctx.reply("Primero corré /analisis para tener contexto.");
+    await ctx.reply("No pude responder. Intentá de nuevo.");
   }
 });
 
