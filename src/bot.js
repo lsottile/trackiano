@@ -3,11 +3,13 @@ import { Bot } from "grammy";
 import { parseMessage } from "./parseMessage.js";
 import { analyzeExpenses } from "./analysis.js";
 import {
+  findBudgetId,
   createExpense,
   getBudgets,
   getMonthlyExpenses,
   getTotalSpentToday,
   getCategoryExpenses,
+  getPeriodSpent,
   createBudget,
 } from "./notion.js";
 import { getPeriodStart, daysUntilPayday } from "./pay.js";
@@ -56,8 +58,10 @@ bot.command("balance", async (ctx) => {
   );
   if (!budget) return ctx.reply(`Category '${category}' not found.`);
 
+  const spent = await getPeriodSpent(budget.id, getPeriodStart());
+  const remaining = budget.amount - spent;
   await ctx.reply(
-    `${budget.name}\nBudget: $${budget.amount}\nSpent: $${budget.totalSpent}\nRemaining: $${budget.remaining}`,
+    `${budget.name}\nBudget: $${budget.amount}\nSpent: $${spent}\nRemaining: $${remaining}`,
   );
 });
 
@@ -105,10 +109,12 @@ bot.command("budget", async (ctx) => {
       .join("\n");
     await ctx.reply(`${budget.name} — detail:\n${lines}`);
   } else {
+    const spent = await getPeriodSpent(budget.id, getPeriodStart());
+    const remaining = budget.amount - spent;
     const days = daysUntilPayday();
-    const dailyAllowance = Math.round(budget.remaining / days);
+    const dailyAllowance = Math.round(remaining / days);
     await ctx.reply(
-      `${budget.name}\nRemaining: $${budget.remaining}\nDays left: ${days}\n→ $${dailyAllowance}/day`,
+      `${budget.name}\nRemaining: $${remaining}\nDays left: ${days}\n→ $${dailyAllowance}/day`,
     );
   }
 });
