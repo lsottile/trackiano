@@ -85,19 +85,23 @@ export async function analyzeExpenses(mode = "breakdown") {
 
   const format = mode === "improve" ? IMPROVE_FORMAT : BREAKDOWN_FORMAT;
 
-  const messages = [
-    { role: "system", content: SYSTEM_PROMPT },
-    { role: "user", content: `${context}\n\n${format}` },
-  ];
-
   const response = await client.chat.completions.create({
     model: "llama-3.3-70b-versatile",
     max_tokens: 512,
-    messages,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: `${context}\n\n${format}` },
+    ],
   });
 
   const text = response.choices[0].message.content;
-  lastConversation = [...messages, { role: "assistant", content: text }];
+
+  lastConversation = [
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: context },
+    { role: "assistant", content: text },
+  ];
+
   return text;
 }
 
