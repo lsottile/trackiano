@@ -1,12 +1,12 @@
 import "dotenv/config";
 import { Bot } from "grammy";
+import { inferCategory, selectInferredBudget } from "./inferCategory.js";
 import { parseMessage } from "./parseMessage.js";
 import {
   findBudgetId,
   createExpense,
   getBudgets,
   getMonthlyExpenses,
-  getMonthlyExpensesWithDetails,
   getTotalSpentToday,
   getCategoryExpenses,
   getPeriodSpent,
@@ -26,13 +26,13 @@ bot.command("help", async (ctx) => {
   await ctx.reply(
     `Available commands:\n\n` +
       `*Log expense*\n` +
+      `description amount\n` +
       `description amount category\n\n` +
       `*Queries*\n` +
       `/balance <category> — remaining balance for a category\n` +
       `/budget <category> — how much you can spend per day\n` +
       `/budget <category> detail — expense list for the current period\n` +
       `/summary — all expenses this month\n` +
-      `/export — full data to paste into any AI\n` +
       `/categories — available categories\n\n` +
       `*Management*\n` +
       `/new <name> <amount> — create a new category`,
@@ -117,59 +117,6 @@ bot.command("budget", async (ctx) => {
   }
 });
 
-bot.command("export", async (ctx) => {
-  const [budgets, expenses] = await Promise.all([
-    getBudgets(),
-    getMonthlyExpensesWithDetails(),
-  ]);
-
-  const budgetMap = Object.fromEntries(
-    budgets.map((b) => [b.id, { name: b.name, budget: b.amount }]),
-  );
-
-  const categoryTotals = {};
-  for (const e of expenses) {
-    categoryTotals[e.categoryId] = (categoryTotals[e.categoryId] ?? 0) + e.amount;
-  }
-
-  const total = Object.values(categoryTotals).reduce((a, b) => a + b, 0);
-  const income = Number(process.env.MONTHLY_INCOME) || null;
-  const today = new Date();
-  const daysLeft = daysUntilPayday();
-
-  const incomeStr = income
-    ? `Ingreso: $${income} | Gastado: $${total} (${Math.round((total / income) * 100)}%) | Ahorrado: $${income - total} (${Math.round(((income - total) / income) * 100)}%)`
-    : `Total gastado: $${total}`;
-
-  const categoryLines = Object.entries(categoryTotals)
-    .sort(([, a], [, b]) => b - a)
-    .map(([id, spent]) => {
-      const { name = id, budget = 0 } = budgetMap[id] ?? {};
-      const pctOfTotal = total > 0 ? Math.round((spent / total) * 100) : 0;
-      const pctOfBudget = budget > 0 ? Math.round((spent / budget) * 100) : "?";
-      const remaining = budget > 0 ? budget - spent : null;
-      const remainingStr = remaining !== null ? `, resta $${remaining}` : "";
-      return `- ${name}: $${spent} (${pctOfTotal}% del total, ${pctOfBudget}% del presupuesto${remainingStr})`;
-    });
-
-  const topExpenses = [...expenses]
-    .sort((a, b) => b.amount - a.amount)
-    .slice(0, 10)
-    .map((e) => {
-      const name = budgetMap[e.categoryId]?.name ?? e.categoryId;
-      return `- ${e.description} (${name}): $${e.amount}`;
-    });
-
-  const text =
-    `📊 Gastos — ${today.toLocaleDateString("es-AR", { month: "long", year: "numeric" })}\n` +
-    `Día ${today.getDate()} del mes · ${daysLeft} días hasta el próximo cobro\n\n` +
-    `💰 ${incomeStr}\n\n` +
-    `Por categoría:\n${categoryLines.join("\n")}\n\n` +
-    `Top gastos individuales:\n${topExpenses.join("\n")}`;
-
-  await ctx.reply(text);
-});
-
 bot.command("new", async (ctx) => {
   const parts = ctx.match.trim().split(/\s+/);
   if (parts.length < 2) return ctx.reply("Usage: /new <name> <amount>");
@@ -186,16 +133,44 @@ bot.on("message:text", async (ctx) => {
   try {
     const { description, amount, category } = parseMessage(ctx.message.text);
 
-    const budgetId = await findBudgetId(category);
-    if (!budgetId)
-      return ctx.reply(
-        `Categoría '${category}' no encontrada. Revisá /categorias.`,
-      );
+    let budgetId;
+    let inferredCategoryName = null;
+
+    if (category) {
+      budgetId = await findBudgetId(category);
+      if (!budgetId)
+        return ctx.reply(
+          `Categoría '${category}' no encontrada. Revisá /categories.`,
+        );
+    } else {
+      const budgets = await getBudgets();
+      let inference;
+      try {
+        inference = await inferCategory({ description, amount, budgets });
+      } catch {
+        return ctx.reply(
+          "No pude inferir la categoría con seguridad. Mandalo como: description amount category",
+        );
+      }
+
+      const budget = selectInferredBudget(budgets, inference);
+      if (!budget) {
+        return ctx.reply(
+          "No pude inferir la categoría con seguridad. Mandalo como: description amount category",
+        );
+      }
+
+      budgetId = budget.id;
+      inferredCategoryName = budget.name;
+    }
 
     await createExpense({ description, amount, budgetId });
 
     const totalToday = await getTotalSpentToday();
-    await ctx.reply(`Cargado ✓\nLlevás $${totalToday} hoy`);
+    const categoryLine = inferredCategoryName
+      ? `\nCategoría: ${inferredCategoryName}`
+      : "";
+    await ctx.reply(`Cargado ✓${categoryLine}\nLlevás $${totalToday} hoy`);
   } catch (err) {
     if (
       err.message.startsWith("Format:") ||

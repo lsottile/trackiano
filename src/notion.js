@@ -50,26 +50,6 @@ export async function getMonthlyExpenses() {
   return totals;
 }
 
-export async function getMonthlyExpensesWithDetails() {
-  const start = new Date();
-  start.setDate(1);
-  const startStr = start.toISOString().split('T')[0];
-
-  const response = await notion.databases.query({
-    database_id: EXPENSES_DB_ID,
-    filter: {
-      property: 'date',
-      date: { on_or_after: startStr },
-    },
-  });
-
-  return response.results.map((page) => ({
-    description: page.properties.description?.title?.[0]?.plain_text ?? '',
-    amount: page.properties.amount?.number ?? 0,
-    categoryId: page.properties.budget?.relation?.[0]?.id ?? 'unknown',
-  }));
-}
-
 export async function getTotalSpentInPeriod(periodStart) {
   const startStr = periodStart.toISOString().split('T')[0];
   const response = await notion.databases.query({

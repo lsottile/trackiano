@@ -6,21 +6,27 @@ Telegram bot that logs expenses to Notion.
 
 Send a message with the format:
 ```
+{description} {amount}
 {description} {amount} {category}
 ```
-Example: `coffee 50 food`
+Examples: `coffee 50`, `coffee 50 food`
+
+When the category is omitted, the bot infers it with OpenRouter using only the
+allowed category names from Notion plus the expense description and amount. If it
+cannot infer a safe match, it asks you to resend the expense with an explicit
+category.
 
 ## Commands
 
 **Queries**
 - `/budget <category>` — daily allowance based on remaining balance and days until payday
-- `/budget <category> detalle` — list all expenses for the current pay period
-- `/saldo <category>` — remaining balance for a category
-- `/resumen` — monthly expenses by category
-- `/categorias` — list all available categories
+- `/budget <category> detail` — list all expenses for the current pay period
+- `/balance <category>` — remaining balance for a category
+- `/summary` — monthly expenses by category
+- `/categories` — list all available categories
 
 **Management**
-- `/nueva <name> <amount>` — create a new budget category in Notion
+- `/new <name> <amount>` — create a new budget category in Notion
 - `/help` — show all available commands
 
 ## Environment Variables
@@ -32,6 +38,8 @@ Example: `coffee 50 food`
 | `NOTION_TOKEN` | ✓ | Notion integration token |
 | `NOTION_EXPENSES_DB_ID` | ✓ | Notion expenses database ID |
 | `NOTION_BUDGETS_DB_ID` | ✓ | Notion budgets database ID |
+| `OPENROUTER_API_KEY` | For inferred categories | OpenRouter API key used when the expense category is omitted |
+| `OPENROUTER_MODEL` | — | OpenRouter model for category inference, defaults to `google/gemini-2.5-flash` |
 | `PAY_DATE_DAY` | — | Day of month for payday (defaults to last day of month) |
 
 ## Setup

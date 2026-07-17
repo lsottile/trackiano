@@ -4,7 +4,8 @@
   "type": "module",
   "main": "src/bot.js",
   "scripts": {
-    "start": "node src/bot.js"
+    "start": "node src/bot.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@notionhq/client": "^2.2.15",
