@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { mock } from 'node:test';
 
-import { findBudgetByName, selectInferredBudget } from '../src/inferCategory.js';
+import { findBudgetByName, inferCategory, selectInferredBudget } from '../src/inferCategory.js';
 
 const budgets = [
   { id: 'budget-food', name: 'Food', amount: 1000 },
@@ -43,4 +43,57 @@ test('rejects category outside Notion budgets', () => {
     }),
     null,
   );
+});
+
+test('requests category inference with all allowed categories and expense details', async () => {
+  const previousApiKey = process.env.OPENROUTER_API_KEY;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+
+  const fetchMock = mock.method(globalThis, 'fetch', async (_url, options) => ({
+    ok: true,
+    json: async () => ({
+      choices: [
+        {
+          message: {
+            content: JSON.stringify({
+              categoryName: 'Transport',
+              confidence: 0.9,
+              reason: 'Recurring transit expense',
+            }),
+          },
+        },
+      ],
+    }),
+  }));
+
+  try {
+    const inference = await inferCategory({
+      description: 'monthly train pass',
+      amount: 42.75,
+      budgets,
+    });
+
+    assert.equal(inference.categoryName, 'Transport');
+
+    const requestBody = JSON.parse(fetchMock.mock.calls[0].arguments[1].body);
+    const userMessage = JSON.parse(requestBody.messages[1].content);
+    assert.deepEqual(userMessage.allowedCategories, ['Food', 'Transport']);
+    assert.deepEqual(userMessage.expense, {
+      description: 'monthly train pass',
+      amount: 42.75,
+    });
+    assert.equal(requestBody.response_format?.type, 'json_object');
+    assert.notEqual(requestBody.response_format?.type, 'json_schema');
+    assert.equal(
+      JSON.stringify(requestBody.response_format ?? {}).includes('enum'),
+      false,
+    );
+  } finally {
+    if (previousApiKey === undefined) {
+      delete process.env.OPENROUTER_API_KEY;
+    } else {
+      process.env.OPENROUTER_API_KEY = previousApiKey;
+    }
+    fetchMock.mock.restore();
+  }
 });

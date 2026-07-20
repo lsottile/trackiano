@@ -40,6 +40,7 @@ category.
 | `NOTION_BUDGETS_DB_ID` | ✓ | Notion budgets database ID |
 | `OPENROUTER_API_KEY` | For inferred categories | OpenRouter API key used when the expense category is omitted |
 | `OPENROUTER_MODEL` | — | OpenRouter model for category inference, defaults to `google/gemini-2.5-flash` |
+| `APP_TIMEZONE` | — | Timezone used for expense dates and daily totals, defaults to `UTC` |
 | `PAY_DATE_DAY` | — | Day of month for payday (defaults to last day of month) |
 
 ## Setup

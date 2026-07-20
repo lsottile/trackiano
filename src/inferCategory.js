@@ -35,7 +35,7 @@ export async function inferCategory({ description, amount, budgets }) {
         {
           role: 'system',
           content:
-            'You categorize expenses. Choose exactly one category from the allowed list. Return only JSON matching the schema.',
+            'You categorize expenses. Choose exactly one category from the allowed list. Return only JSON with categoryName, confidence, and reason.',
         },
         {
           role: 'user',
@@ -45,23 +45,7 @@ export async function inferCategory({ description, amount, budgets }) {
           }),
         },
       ],
-      response_format: {
-        type: 'json_schema',
-        json_schema: {
-          name: 'expense_category_inference',
-          strict: true,
-          schema: {
-            type: 'object',
-            properties: {
-              categoryName: { type: 'string', enum: allowedCategories },
-              confidence: { type: 'number' },
-              reason: { type: 'string' },
-            },
-            required: ['categoryName', 'confidence', 'reason'],
-            additionalProperties: false,
-          },
-        },
-      },
+      response_format: { type: 'json_object' },
     }),
   });
 

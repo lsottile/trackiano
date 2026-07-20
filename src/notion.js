@@ -4,6 +4,19 @@ import 'dotenv/config';
 const notion = new Client({ auth: process.env.NOTION_TOKEN });
 const EXPENSES_DB_ID = process.env.NOTION_EXPENSES_DB_ID;
 const BUDGETS_DB_ID = process.env.NOTION_BUDGETS_DB_ID;
+const DEFAULT_APP_TIMEZONE = 'UTC';
+
+export function formatAppDate(date = new Date()) {
+  const timeZone = process.env.APP_TIMEZONE ?? DEFAULT_APP_TIMEZONE;
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
 
 export async function findBudgetId(categoryName) {
   const response = await notion.databases.query({ database_id: BUDGETS_DB_ID });
@@ -31,7 +44,7 @@ export async function getPeriodSpent(categoryId, periodStart) {
 export async function getMonthlyExpenses() {
   const start = new Date();
   start.setDate(1);
-  const startStr = start.toISOString().split('T')[0];
+  const startStr = formatAppDate(start);
 
   const response = await notion.databases.query({
     database_id: EXPENSES_DB_ID,
@@ -51,7 +64,7 @@ export async function getMonthlyExpenses() {
 }
 
 export async function getTotalSpentInPeriod(periodStart) {
-  const startStr = periodStart.toISOString().split('T')[0];
+  const startStr = formatAppDate(periodStart);
   const response = await notion.databases.query({
     database_id: EXPENSES_DB_ID,
     filter: { property: 'date', date: { on_or_after: startStr } },
@@ -59,8 +72,8 @@ export async function getTotalSpentInPeriod(periodStart) {
   return response.results.reduce((sum, page) => sum + (page.properties.amount?.number ?? 0), 0);
 }
 
-export async function getTotalSpentToday() {
-  const today = new Date().toISOString().split('T')[0];
+export async function getTotalSpentToday({ now = new Date() } = {}) {
+  const today = formatAppDate(now);
   const response = await notion.databases.query({
     database_id: EXPENSES_DB_ID,
     filter: { property: 'date', date: { equals: today } },
@@ -69,7 +82,7 @@ export async function getTotalSpentToday() {
 }
 
 export async function getCategoryExpenses(categoryId, periodStart) {
-  const startStr = periodStart.toISOString().split('T')[0];
+  const startStr = formatAppDate(periodStart);
   const response = await notion.databases.query({
     database_id: EXPENSES_DB_ID,
     filter: {
@@ -114,7 +127,7 @@ export async function deleteExpense(pageId) {
   await notion.pages.update({ page_id: pageId, archived: true });
 }
 
-export async function createExpense({ description, amount, budgetId }) {
+export async function createExpense({ description, amount, budgetId, now = new Date() }) {
   await notion.pages.create({
     parent: { database_id: EXPENSES_DB_ID },
     properties: {
@@ -125,7 +138,7 @@ export async function createExpense({ description, amount, budgetId }) {
         number: amount,
       },
       date: {
-        date: { start: new Date().toISOString().split('T')[0] },
+        date: { start: formatAppDate(now) },
       },
       budget: {
         relation: [{ id: budgetId }],
