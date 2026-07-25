@@ -35,7 +35,10 @@ export async function inferCategory({ description, amount, budgets }) {
         {
           role: 'system',
           content:
-            'You categorize expenses. Choose exactly one category from the allowed list. Return only JSON with categoryName, confidence, and reason.',
+            'You categorize expenses. Choose exactly one category from the allowed list. ' +
+            'Use Housing for rent and recurring home costs; use Lodging for temporary stays. ' +
+            'Use Investments for stocks, funds, and other financial assets; use Shopping for goods purchased for use. ' +
+            'Return only JSON with categoryName, confidence, and reason.',
         },
         {
           role: 'user',

@@ -97,3 +97,71 @@ test('requests category inference with all allowed categories and expense detail
     fetchMock.mock.restore();
   }
 });
+
+test('distinguishes recurring housing costs from temporary lodging', async () => {
+  const previousApiKey = process.env.OPENROUTER_API_KEY;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+
+  const fetchMock = mock.method(globalThis, 'fetch', async () => ({
+    ok: true,
+    json: async () => ({
+      choices: [{ message: { content: '{"categoryName":"Housing","confidence":0.9}' } }],
+    }),
+  }));
+
+  try {
+    await inferCategory({
+      description: 'monthly rent',
+      amount: 1200,
+      budgets: [
+        { id: 'housing', name: 'Housing', amount: 0 },
+        { id: 'lodging', name: 'Lodging', amount: 0 },
+      ],
+    });
+
+    const requestBody = JSON.parse(fetchMock.mock.calls[0].arguments[1].body);
+    const systemPrompt = requestBody.messages[0].content;
+    assert.match(systemPrompt, /Housing.*rent.*Lodging.*temporary/i);
+  } finally {
+    if (previousApiKey === undefined) {
+      delete process.env.OPENROUTER_API_KEY;
+    } else {
+      process.env.OPENROUTER_API_KEY = previousApiKey;
+    }
+    fetchMock.mock.restore();
+  }
+});
+
+test('distinguishes financial investments from shopping purchases', async () => {
+  const previousApiKey = process.env.OPENROUTER_API_KEY;
+  process.env.OPENROUTER_API_KEY = 'test-key';
+
+  const fetchMock = mock.method(globalThis, 'fetch', async () => ({
+    ok: true,
+    json: async () => ({
+      choices: [{ message: { content: '{"categoryName":"Investments","confidence":0.9}' } }],
+    }),
+  }));
+
+  try {
+    await inferCategory({
+      description: 'S&P 500 contribution',
+      amount: 500,
+      budgets: [
+        { id: 'investments', name: 'Investments', amount: 0 },
+        { id: 'shopping', name: 'Shopping', amount: 0 },
+      ],
+    });
+
+    const requestBody = JSON.parse(fetchMock.mock.calls[0].arguments[1].body);
+    const systemPrompt = requestBody.messages[0].content;
+    assert.match(systemPrompt, /Investments.*stocks.*Shopping.*goods/i);
+  } finally {
+    if (previousApiKey === undefined) {
+      delete process.env.OPENROUTER_API_KEY;
+    } else {
+      process.env.OPENROUTER_API_KEY = previousApiKey;
+    }
+    fetchMock.mock.restore();
+  }
+});
