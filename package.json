@@ -5,6 +5,7 @@
   "main": "src/bot.js",
   "scripts": {
     "start": "node src/bot.js",
+    "notifications": "node src/notifications.js",
     "test": "node --test"
   },
   "dependencies": {

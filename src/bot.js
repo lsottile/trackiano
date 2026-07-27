@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { pathToFileURL } from "node:url";
 import { Bot } from "grammy";
 import { inferCategory, selectInferredBudget } from "./inferCategory.js";
 import { parseMessage } from "./parseMessage.js";
@@ -14,6 +15,7 @@ import {
 } from "./notion.js";
 import { getPeriodStart, daysUntilPayday } from "./pay.js";
 import { formatMonthlySummary } from "./summary.js";
+import { handleTargetCommand } from "./target.js";
 
 const bot = new Bot(process.env.TELEGRAM_TOKEN);
 const OWNER_ID = Number(process.env.TELEGRAM_OWNER_ID);
@@ -24,7 +26,7 @@ bot.use((ctx, next) => {
 });
 
 bot.command("help", async (ctx) => {
-  await ctx.reply(
+  return ctx.reply(
     `Available commands:\n\n` +
       `*Log expense*\n` +
       `description amount\n` +
@@ -34,6 +36,7 @@ bot.command("help", async (ctx) => {
       `/budget <category> — how much you can spend per day\n` +
       `/budget <category> detail — expense list for the current period\n` +
       `/summary — all expenses this month\n` +
+      `/target [amount] — show or set the recurring daily target\n` +
       `/categories — available categories\n\n` +
       `*Management*\n` +
       `/new <name> <amount> — create a new category`,
@@ -44,7 +47,7 @@ bot.command("help", async (ctx) => {
 bot.command("categories", async (ctx) => {
   const budgets = await getBudgets();
   const lines = budgets.map((b) => `• ${b.name}`).join("\n");
-  await ctx.reply(`Available categories:\n${lines}`);
+  return ctx.reply(`Available categories:\n${lines}`);
 });
 
 bot.command("balance", async (ctx) => {
@@ -59,7 +62,7 @@ bot.command("balance", async (ctx) => {
 
   const spent = await getPeriodSpent(budget.id, getPeriodStart());
   const remaining = budget.amount - spent;
-  await ctx.reply(
+  return ctx.reply(
     `${budget.name}\nBudget: $${budget.amount}\nSpent: $${spent}\nRemaining: $${remaining}`,
   );
 });
@@ -71,6 +74,8 @@ bot.command("summary", async (ctx) => {
   ]);
   return ctx.reply(formatMonthlySummary(budgets, totals));
 });
+
+bot.command("target", handleTargetCommand);
 
 bot.command("budget", async (ctx) => {
   const parts = ctx.match.trim().split(/\s+/);
@@ -94,13 +99,13 @@ bot.command("budget", async (ctx) => {
     const lines = expenses
       .map((e) => `• ${e.description} — $${e.amount}`)
       .join("\n");
-    await ctx.reply(`${budget.name} — detail:\n${lines}`);
+    return ctx.reply(`${budget.name} — detail:\n${lines}`);
   } else {
     const spent = await getPeriodSpent(budget.id, getPeriodStart());
     const remaining = budget.amount - spent;
     const days = daysUntilPayday();
     const dailyAllowance = Math.round(remaining / days);
-    await ctx.reply(
+    return ctx.reply(
       `${budget.name}\nRemaining: $${remaining}\nDays left: ${days}\n→ $${dailyAllowance}/day`,
     );
   }
@@ -115,7 +120,7 @@ bot.command("new", async (ctx) => {
 
   const name = parts.slice(0, -1).join(" ");
   await createBudget(name, amount);
-  await ctx.reply(`✓ Category '${name}' created with $${amount}`);
+  return ctx.reply(`✓ Category '${name}' created with $${amount}`);
 });
 
 bot.on("message:text", async (ctx) => {
@@ -159,7 +164,7 @@ bot.on("message:text", async (ctx) => {
     const categoryLine = inferredCategoryName
       ? `\nCategoría: ${inferredCategoryName}`
       : "";
-    await ctx.reply(`Cargado ✓${categoryLine}\nLlevás $${totalToday} hoy`);
+    return ctx.reply(`Cargado ✓${categoryLine}\nLlevás $${totalToday} hoy`);
   } catch (err) {
     if (
       err.message.startsWith("Format:") ||
@@ -171,6 +176,12 @@ bot.on("message:text", async (ctx) => {
   }
 });
 
-process.once("SIGINT", () => bot.stop());
+export function startBot() {
+  process.once("SIGINT", () => bot.stop());
+  process.once("SIGTERM", () => bot.stop());
+  return bot.start();
+}
 
-bot.start();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  startBot();
+}
