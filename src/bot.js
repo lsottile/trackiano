@@ -13,6 +13,7 @@ import {
   createBudget,
 } from "./notion.js";
 import { getPeriodStart, daysUntilPayday } from "./pay.js";
+import { formatMonthlySummary } from "./summary.js";
 
 const bot = new Bot(process.env.TELEGRAM_TOKEN);
 const OWNER_ID = Number(process.env.TELEGRAM_OWNER_ID);
@@ -68,19 +69,7 @@ bot.command("summary", async (ctx) => {
     getBudgets(),
     getMonthlyExpenses(),
   ]);
-  const budgetMap = Object.fromEntries(budgets.map((b) => [b.id, b.name]));
-
-  const lines = Object.entries(totals).map(([id, spent]) => {
-    const name = budgetMap[id] ?? id;
-    return `• ${name}: $${spent}`;
-  });
-
-  const total = Object.values(totals).reduce((a, b) => a + b, 0);
-  await ctx.reply(
-    lines.length
-      ? `Monthly expenses:\n${lines.join("\n")}\n\nTotal: $${total}`
-      : "No expenses this month.",
-  );
+  return ctx.reply(formatMonthlySummary(budgets, totals));
 });
 
 bot.command("budget", async (ctx) => {

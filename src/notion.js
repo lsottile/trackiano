@@ -41,21 +41,32 @@ export async function getPeriodSpent(categoryId, periodStart) {
   return expenses.reduce((sum, e) => sum + e.amount, 0);
 }
 
-export async function getMonthlyExpenses() {
-  const start = new Date();
-  start.setDate(1);
-  const startStr = formatAppDate(start);
+export async function getMonthlyExpenses({ now = new Date() } = {}) {
+  const [year, month] = formatAppDate(now).split('-').map(Number);
+  const monthStart = `${year}-${String(month).padStart(2, '0')}-01`;
+  const nextMonthYear = month === 12 ? year + 1 : year;
+  const nextMonth = month === 12 ? 1 : month + 1;
+  const nextMonthStart = `${nextMonthYear}-${String(nextMonth).padStart(2, '0')}-01`;
 
-  const response = await notion.databases.query({
-    database_id: EXPENSES_DB_ID,
-    filter: {
-      property: 'date',
-      date: { on_or_after: startStr },
-    },
-  });
+  const pages = [];
+  let cursor;
+  do {
+    const response = await notion.databases.query({
+      database_id: EXPENSES_DB_ID,
+      filter: {
+        and: [
+          { property: 'date', date: { on_or_after: monthStart } },
+          { property: 'date', date: { before: nextMonthStart } },
+        ],
+      },
+      ...(cursor ? { start_cursor: cursor } : {}),
+    });
+    pages.push(...(response.results ?? []));
+    cursor = response.has_more ? (response.next_cursor ?? null) : null;
+  } while (cursor);
 
   const totals = {};
-  for (const page of response.results) {
+  for (const page of pages) {
     const category = page.properties.budget?.relation?.[0]?.id ?? 'unknown';
     const amount = page.properties.amount?.number ?? 0;
     totals[category] = (totals[category] ?? 0) + amount;
