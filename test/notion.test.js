@@ -32,6 +32,7 @@ const {
   claimSummaryPeriod,
   createExpense,
   getExpensesInRange,
+  getMonthlyExpenseDetails,
   getMonthlyExpenses,
   getSettings,
   getTotalSpentToday,
@@ -110,6 +111,40 @@ test('aggregates every Notion page for the current app calendar month', async ()
   });
   assert.equal(notionRequests[0].body.start_cursor, undefined);
   assert.equal(notionRequests[1].body.start_cursor, 'next-expenses-page');
+});
+
+test('returns every current-month expense detail for verbose summaries', async () => {
+  notionRequests.length = 0;
+  expenseQueryResponses.push({
+    results: [
+      {
+        id: 'expense-coffee',
+        properties: {
+          budget: { relation: [{ id: 'budget-food' }] },
+          description: { title: [{ plain_text: 'Coffee' }] },
+          amount: { number: 5.5 },
+        },
+      },
+    ],
+    has_more: false,
+  });
+
+  const expenses = await getMonthlyExpenseDetails({
+    now: new Date('2026-08-01T02:00:00.000Z'),
+  });
+
+  assert.deepEqual(expenses, [{
+    id: 'expense-coffee',
+    budgetId: 'budget-food',
+    description: 'Coffee',
+    amount: 5.5,
+  }]);
+  assert.deepEqual(notionRequests[0].body.filter, {
+    and: [
+      { property: 'date', date: { on_or_after: '2026-07-01' } },
+      { property: 'date', date: { before: '2026-08-01' } },
+    ],
+  });
 });
 
 test('queries an exact half-open date range and paginates every result', async () => {

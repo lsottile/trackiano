@@ -40,7 +40,7 @@ export async function getPeriodSpent(categoryId, periodStart) {
   return expenses.reduce((sum, e) => sum + e.amount, 0);
 }
 
-export async function getExpensesInRange(start, end) {
+async function getExpensePagesInRange(start, end) {
   const pages = [];
   let cursor;
   do {
@@ -57,7 +57,11 @@ export async function getExpensesInRange(start, end) {
     pages.push(...(response?.results ?? []));
     cursor = response?.has_more ? (response?.next_cursor ?? null) : null;
   } while (cursor);
+  return pages;
+}
 
+export async function getExpensesInRange(start, end) {
+  const pages = await getExpensePagesInRange(start, end);
   const totals = {};
   for (const page of pages) {
     const category = page?.properties?.budget?.relation?.[0]?.id ?? 'unknown';
@@ -67,13 +71,30 @@ export async function getExpensesInRange(start, end) {
   return totals;
 }
 
-export async function getMonthlyExpenses({ now = new Date() } = {}) {
+function getMonthlyDateRange(now) {
   const [year, month] = formatAppDate(now).split('-').map(Number);
   const monthStart = `${year}-${String(month).padStart(2, '0')}-01`;
   const nextMonthYear = month === 12 ? year + 1 : year;
   const nextMonth = month === 12 ? 1 : month + 1;
   const nextMonthStart = `${nextMonthYear}-${String(nextMonth).padStart(2, '0')}-01`;
+  return { monthStart, nextMonthStart };
+}
+
+export async function getMonthlyExpenses({ now = new Date() } = {}) {
+  const { monthStart, nextMonthStart } = getMonthlyDateRange(now);
   return getExpensesInRange(monthStart, nextMonthStart);
+}
+
+export async function getMonthlyExpenseDetails({ now = new Date() } = {}) {
+  const { monthStart, nextMonthStart } = getMonthlyDateRange(now);
+  const pages = await getExpensePagesInRange(monthStart, nextMonthStart);
+
+  return pages.map((page) => ({
+    id: page?.id ?? '',
+    budgetId: page?.properties?.budget?.relation?.[0]?.id ?? 'unknown',
+    description: page?.properties?.description?.title?.[0]?.plain_text ?? '',
+    amount: page?.properties?.amount?.number ?? 0,
+  }));
 }
 
 function readSettings(page) {

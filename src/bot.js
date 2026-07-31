@@ -8,17 +8,35 @@ import {
   createExpense,
   getBudgets,
   getMonthlyExpenses,
+  getMonthlyExpenseDetails,
   getTotalSpentToday,
   getCategoryExpenses,
   getPeriodSpent,
   createBudget,
 } from "./notion.js";
 import { getPeriodStart, daysUntilPayday } from "./pay.js";
-import { formatMonthlySummary } from "./summary.js";
+import { formatMonthlySummary, formatVerboseMonthlySummary } from "./summary.js";
 import { handleTargetCommand } from "./target.js";
 
 const bot = new Bot(process.env.TELEGRAM_TOKEN);
 const OWNER_ID = Number(process.env.TELEGRAM_OWNER_ID);
+
+async function handleCompleteSummary(ctx, {
+  getBudgets: readBudgets = getBudgets,
+  getMonthlyExpenseDetails: readMonthlyExpenseDetails = getMonthlyExpenseDetails,
+} = {}) {
+  const [budgets, expenses] = await Promise.all([
+    readBudgets(),
+    readMonthlyExpenseDetails(),
+  ]);
+  return ctx.reply(formatVerboseMonthlySummary(budgets, expenses));
+}
+
+export function registerCompleteSummaryHandler(composer, dependencies) {
+  return composer.on("message:text").hears("/summary-complete", (ctx) =>
+    handleCompleteSummary(ctx, dependencies),
+  );
+}
 
 bot.use((ctx, next) => {
   if (ctx.from?.id !== OWNER_ID) return ctx.reply("Unauthorized");
@@ -36,6 +54,7 @@ bot.command("help", async (ctx) => {
       `/budget <category> — how much you can spend per day\n` +
       `/budget <category> detail — expense list for the current period\n` +
       `/summary — all expenses this month\n` +
+      `/summary-complete — monthly summary with top expenses\n` +
       `/target [amount] — show or set the recurring daily target\n` +
       `/categories — available categories\n\n` +
       `*Management*\n` +
@@ -49,6 +68,8 @@ bot.command("categories", async (ctx) => {
   const lines = budgets.map((b) => `• ${b.name}`).join("\n");
   return ctx.reply(`Available categories:\n${lines}`);
 });
+
+registerCompleteSummaryHandler(bot);
 
 bot.command("balance", async (ctx) => {
   const category = ctx.match.trim();
@@ -77,7 +98,9 @@ bot.command("summary", async (ctx) => {
 
 bot.command("target", handleTargetCommand);
 
-bot.command("budget", async (ctx) => {
+export async function handleBudget(ctx, {
+  getBudgets: readBudgets = getBudgets,
+} = {}) {
   const parts = ctx.match.trim().split(/\s+/);
   if (!parts[0]) return ctx.reply("Usage: /budget <category> [detail]");
 
@@ -85,8 +108,9 @@ bot.command("budget", async (ctx) => {
   const categoryName = isDetail
     ? parts.slice(0, -1).join(" ")
     : parts.join(" ");
+  if (!categoryName) return ctx.reply("Usage: /budget <category> [detail]");
 
-  const budgets = await getBudgets();
+  const budgets = await readBudgets();
   const budget = budgets.find(
     (b) => b.name.toLowerCase() === categoryName.toLowerCase(),
   );
@@ -109,7 +133,9 @@ bot.command("budget", async (ctx) => {
       `${budget.name}\nRemaining: $${remaining}\nDays left: ${days}\n→ $${dailyAllowance}/day`,
     );
   }
-});
+}
+
+bot.command("budget", handleBudget);
 
 bot.command("new", async (ctx) => {
   const parts = ctx.match.trim().split(/\s+/);

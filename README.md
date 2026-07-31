@@ -23,6 +23,7 @@ category.
 - `/budget <category> detail` — list all expenses for the current pay period
 - `/balance <category>` — remaining balance for a category
 - `/summary` — monthly expenses by category
+- `/summary-complete` — monthly summary with the two largest expenses in each category
 - `/target` — show the recurring global daily spending target
 - `/target <amount>` — set a positive recurring global daily spending target
 - `/categories` — list all available categories
