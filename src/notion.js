@@ -207,6 +207,13 @@ export async function getTotalSpentToday({ now = new Date() } = {}) {
   ) ?? 0;
 }
 
+export async function createExpenseAndGetTotalToday(expense) {
+  const now = expense.now ?? new Date();
+  const totalToday = await getTotalSpentToday({ now });
+  await createExpense({ ...expense, now });
+  return totalToday + expense.amount;
+}
+
 export async function getCategoryExpenses(categoryId, periodStart) {
   const startStr = formatAppDate(periodStart);
   const response = await notion.databases.query({

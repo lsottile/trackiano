@@ -5,11 +5,10 @@ import { inferCategory, selectInferredBudget } from "./inferCategory.js";
 import { parseMessage } from "./parseMessage.js";
 import {
   findBudgetId,
-  createExpense,
+  createExpenseAndGetTotalToday,
   getBudgets,
   getMonthlyExpenses,
   getMonthlyExpenseDetails,
-  getTotalSpentToday,
   getCategoryExpenses,
   getPeriodSpent,
   createBudget,
@@ -184,9 +183,11 @@ bot.on("message:text", async (ctx) => {
       inferredCategoryName = budget.name;
     }
 
-    await createExpense({ description, amount, budgetId });
-
-    const totalToday = await getTotalSpentToday();
+    const totalToday = await createExpenseAndGetTotalToday({
+      description,
+      amount,
+      budgetId,
+    });
     const categoryLine = inferredCategoryName
       ? `\nCategoría: ${inferredCategoryName}`
       : "";

@@ -31,6 +31,7 @@ process.env.NOTION_SETTINGS_DB_ID = 'test-settings';
 const {
   claimSummaryPeriod,
   createExpense,
+  createExpenseAndGetTotalToday,
   getExpensesInRange,
   getMonthlyExpenseDetails,
   getMonthlyExpenses,
@@ -75,6 +76,38 @@ test('queries today total with Guatemala local date for UTC instant already next
     notionRequests[0].body.filter.date.equals,
     '2026-07-21',
   );
+});
+
+test('uses one timestamp for the pre-write total and expense date', async (t) => {
+  notionRequests.length = 0;
+  expenseQueryResponses.push({
+    results: [expensePage('budget-food', 5)],
+  });
+
+  const RealDate = Date;
+  const timestamps = [
+    new RealDate('2026-07-22T05:59:59.000Z'),
+    new RealDate('2026-07-22T06:00:00.000Z'),
+  ];
+  let clockReads = 0;
+  t.mock.method(global, 'Date', class extends RealDate {
+    constructor(...args) {
+      super(...(args.length ? args : [timestamps[clockReads++]]));
+    }
+  });
+
+  const total = await createExpenseAndGetTotalToday({
+    description: 'coffee',
+    amount: 5,
+    budgetId: 'budget-food',
+  });
+
+  assert.equal(total, 10);
+  assert.equal(clockReads, 1);
+  assert.equal(notionRequests[0].path, 'databases/test-expenses/query');
+  assert.equal(notionRequests[1].path, 'pages');
+  assert.equal(notionRequests[0].body.filter.date.equals, '2026-07-21');
+  assert.equal(notionRequests[1].body.properties.date.date.start, '2026-07-21');
 });
 
 test('aggregates every Notion page for the current app calendar month', async () => {
