@@ -83,5 +83,5 @@ test('shows the current recurring daily target', async () => {
     setDailyTarget: async () => assert.fail('setDailyTarget should not be called'),
   });
 
-  assert.deepEqual(replies, ['Current daily target: $70']);
+  assert.deepEqual(replies, ['Current daily target: $70.00']);
 });

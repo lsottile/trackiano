@@ -12,13 +12,91 @@ import {
   getCategoryExpenses,
   getPeriodSpent,
   createBudget,
+  deleteExpense,
+  updateExpenseBudget,
 } from "./notion.js";
+import { formatMoney, roundMoney } from "./money.js";
 import { getPeriodStart, daysUntilPayday } from "./pay.js";
 import { formatMonthlySummary, formatVerboseMonthlySummary } from "./summary.js";
 import { handleTargetCommand } from "./target.js";
 
 const bot = new Bot(process.env.TELEGRAM_TOKEN);
 const OWNER_ID = Number(process.env.TELEGRAM_OWNER_ID);
+
+function encodeId(id) {
+  return Buffer.from(id.replaceAll("-", ""), "hex").toString("base64url");
+}
+
+function decodeId(value) {
+  if (!/^[A-Za-z0-9_-]{22}$/.test(value)) return null;
+  const id = Buffer.from(value, "base64url");
+  if (id.length !== 16 || id.toString("base64url") !== value) return null;
+  const hex = id.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+export function encodeExpenseCallback(action, expenseId, budgetId) {
+  return ["ex", action, encodeId(expenseId), budgetId && encodeId(budgetId)]
+    .filter(Boolean)
+    .join(".");
+}
+
+export function decodeExpenseCallback(data) {
+  const [prefix, action, expense, budget, ...extra] = data.split(".");
+  if (
+    prefix !== "ex" ||
+    !["recategorize", "set-category", "delete"].includes(action) ||
+    extra.length ||
+    !expense ||
+    (action === "set-category") !== Boolean(budget)
+  ) return null;
+  const expenseId = decodeId(expense);
+  const budgetId = budget ? decodeId(budget) : null;
+  if (!expenseId || (budget && !budgetId)) return null;
+  return { action, expenseId, budgetId };
+}
+
+export function registerExpenseActionHandlers(composer, {
+  getBudgets: readBudgets = getBudgets,
+  deleteExpense: removeExpense = deleteExpense,
+  updateExpenseBudget: changeExpenseBudget = updateExpenseBudget,
+} = {}) {
+  return composer.on("callback_query:data", async (ctx, next) => {
+    const callback = decodeExpenseCallback(ctx.callbackQuery.data);
+    if (!callback) return next();
+    await ctx.answerCallbackQuery?.();
+
+    try {
+      if (callback.action === "delete") {
+        await removeExpense(callback.expenseId);
+        return ctx.reply("Gasto eliminado ✓");
+      }
+
+      const budgets = await readBudgets();
+      if (callback.action === "recategorize") {
+        return ctx.reply("Elegí la nueva categoría:", {
+          reply_markup: {
+            inline_keyboard: budgets.map((budget) => [{
+              text: budget.name,
+              callback_data: encodeExpenseCallback(
+                "set-category",
+                callback.expenseId,
+                budget.id,
+              ),
+            }]),
+          },
+        });
+      }
+
+      const budget = budgets.find((item) => item.id === callback.budgetId);
+      if (!budget) return ctx.reply("La categoría ya no está disponible.");
+      await changeExpenseBudget(callback.expenseId, budget.id);
+      return ctx.reply(`Categoría actualizada a ${budget.name} ✓`);
+    } catch {
+      return ctx.reply("No pude actualizar ese gasto. Probá de nuevo.");
+    }
+  });
+}
 
 async function handleCompleteSummary(ctx, {
   getBudgets: readBudgets = getBudgets,
@@ -41,6 +119,7 @@ bot.use((ctx, next) => {
   if (ctx.from?.id !== OWNER_ID) return ctx.reply("Unauthorized");
   return next();
 });
+registerExpenseActionHandlers(bot);
 
 bot.command("help", async (ctx) => {
   return ctx.reply(
@@ -83,7 +162,8 @@ bot.command("balance", async (ctx) => {
   const spent = await getPeriodSpent(budget.id, getPeriodStart());
   const remaining = budget.amount - spent;
   return ctx.reply(
-    `${budget.name}\nBudget: $${budget.amount}\nSpent: $${spent}\nRemaining: $${remaining}`,
+    `${budget.name}\nBudget: $${formatMoney(budget.amount)}\n` +
+        `Spent: $${formatMoney(spent)}\nRemaining: $${formatMoney(remaining)}`,
   );
 });
 
@@ -120,16 +200,17 @@ export async function handleBudget(ctx, {
     if (!expenses.length)
       return ctx.reply(`No expenses in ${budget.name} this period.`);
     const lines = expenses
-      .map((e) => `• ${e.description} — $${e.amount}`)
+      .map((e) => `• ${e.description} — $${formatMoney(e.amount)}`)
       .join("\n");
     return ctx.reply(`${budget.name} — detail:\n${lines}`);
   } else {
     const spent = await getPeriodSpent(budget.id, getPeriodStart());
     const remaining = budget.amount - spent;
     const days = daysUntilPayday();
-    const dailyAllowance = Math.round(remaining / days);
+    const dailyAllowance = roundMoney(remaining / days);
     return ctx.reply(
-      `${budget.name}\nRemaining: $${remaining}\nDays left: ${days}\n→ $${dailyAllowance}/day`,
+      `${budget.name}\nRemaining: $${formatMoney(remaining)}\n` +
+          `Days left: ${days}\n→ $${formatMoney(dailyAllowance)}/day`,
     );
   }
 }
@@ -145,34 +226,43 @@ bot.command("new", async (ctx) => {
 
   const name = parts.slice(0, -1).join(" ");
   await createBudget(name, amount);
-  return ctx.reply(`✓ Category '${name}' created with $${amount}`);
+  return ctx.reply(`✓ Category '${name}' created with $${formatMoney(amount)}`);
 });
 
-bot.on("message:text", async (ctx) => {
+export async function handleExpenseMessage(ctx, {
+  findBudgetId: readBudgetId = findBudgetId,
+  getBudgets: readBudgets = getBudgets,
+  inferCategory: categorize = inferCategory,
+  selectInferredBudget: selectBudget = selectInferredBudget,
+  createExpenseAndGetTotalToday: writeExpense = createExpenseAndGetTotalToday,
+} = {}) {
   try {
-    const { description, amount, category } = parseMessage(ctx.message.text);
+    const parsed = parseMessage(ctx.message.text);
+    const { description, category } = parsed;
+    const amount = roundMoney(parsed.amount);
 
     let budgetId;
     let inferredCategoryName = null;
 
     if (category) {
-      budgetId = await findBudgetId(category);
-      if (!budgetId)
+      budgetId = await readBudgetId(category);
+      if (!budgetId) {
         return ctx.reply(
           `Categoría '${category}' no encontrada. Revisá /categories.`,
         );
+      }
     } else {
-      const budgets = await getBudgets();
+      const budgets = await readBudgets();
       let inference;
       try {
-        inference = await inferCategory({ description, amount, budgets });
+        inference = await categorize({ description, amount, budgets });
       } catch {
         return ctx.reply(
           "No pude inferir la categoría con seguridad. Mandalo como: description amount category",
         );
       }
 
-      const budget = selectInferredBudget(budgets, inference);
+      const budget = selectBudget(budgets, inference);
       if (!budget) {
         return ctx.reply(
           "No pude inferir la categoría con seguridad. Mandalo como: description amount category",
@@ -183,7 +273,7 @@ bot.on("message:text", async (ctx) => {
       inferredCategoryName = budget.name;
     }
 
-    const totalToday = await createExpenseAndGetTotalToday({
+    const { expenseId, totalToday } = await writeExpense({
       description,
       amount,
       budgetId,
@@ -191,7 +281,23 @@ bot.on("message:text", async (ctx) => {
     const categoryLine = inferredCategoryName
       ? `\nCategoría: ${inferredCategoryName}`
       : "";
-    return ctx.reply(`Cargado ✓${categoryLine}\nLlevás $${totalToday} hoy`);
+    return ctx.reply(
+      `Cargado ✓${categoryLine}\nLlevás $${formatMoney(totalToday)} hoy`,
+      {
+        reply_markup: {
+          inline_keyboard: [[
+            {
+              text: "Recategorizar",
+              callback_data: encodeExpenseCallback("recategorize", expenseId),
+            },
+            {
+              text: "Eliminar",
+              callback_data: encodeExpenseCallback("delete", expenseId),
+            },
+          ]],
+        },
+      },
+    );
   } catch (err) {
     if (
       err.message.startsWith("Format:") ||
@@ -201,7 +307,9 @@ bot.on("message:text", async (ctx) => {
     }
     return ctx.reply("Something went wrong, try again.");
   }
-});
+}
+
+bot.on("message:text", handleExpenseMessage);
 
 export function startBot() {
   process.once("SIGINT", () => bot.stop());

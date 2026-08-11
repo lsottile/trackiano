@@ -1,5 +1,6 @@
 import { Client } from '@notionhq/client';
 import 'dotenv/config';
+import { roundMoney } from './money.js';
 import { formatDateInTimeZone } from './periods.js';
 
 const notion = new Client({ auth: process.env.NOTION_TOKEN });
@@ -158,7 +159,7 @@ export async function setDailyTarget(dailyTarget, initialPeriodKeys) {
   await notion.pages.update({
     page_id: settings.id,
     properties: {
-      [SETTINGS_PROPERTIES.dailyTarget]: { number: dailyTarget },
+      [SETTINGS_PROPERTIES.dailyTarget]: { number: roundMoney(dailyTarget) },
     },
   });
 }
@@ -210,8 +211,9 @@ export async function getTotalSpentToday({ now = new Date() } = {}) {
 export async function createExpenseAndGetTotalToday(expense) {
   const now = expense.now ?? new Date();
   const totalToday = await getTotalSpentToday({ now });
-  await createExpense({ ...expense, now });
-  return totalToday + expense.amount;
+  const amount = roundMoney(expense.amount);
+  const expenseId = await createExpense({ ...expense, amount, now });
+  return { expenseId, totalToday: roundMoney(totalToday + amount) };
 }
 
 export async function getCategoryExpenses(categoryId, periodStart) {
@@ -236,7 +238,7 @@ export async function createBudget(name, amount) {
     parent: { database_id: BUDGETS_DB_ID },
     properties: {
       budget: { title: [{ text: { content: name } }] },
-      amount: { number: amount },
+      amount: { number: roundMoney(amount) },
     },
   });
 }
@@ -260,15 +262,22 @@ export async function deleteExpense(pageId) {
   await notion.pages.update({ page_id: pageId, archived: true });
 }
 
+export async function updateExpenseBudget(pageId, budgetId) {
+  await notion.pages.update({
+    page_id: pageId,
+    properties: { budget: { relation: [{ id: budgetId }] } },
+  });
+}
+
 export async function createExpense({ description, amount, budgetId, now = new Date() }) {
-  await notion.pages.create({
+  const page = await notion.pages.create({
     parent: { database_id: EXPENSES_DB_ID },
     properties: {
       description: {
         title: [{ text: { content: description } }],
       },
       amount: {
-        number: amount,
+        number: roundMoney(amount),
       },
       date: {
         date: { start: formatAppDate(now) },
@@ -278,4 +287,5 @@ export async function createExpense({ description, amount, budgetId, now = new D
       },
     },
   });
+  return page?.id ?? '';
 }

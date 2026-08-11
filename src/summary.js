@@ -1,22 +1,6 @@
+import { formatMoney, roundMoney } from './money.js';
+
 const BAR_WIDTH = 10;
-
-function roundDisplay(value) {
-  return Math.round(value);
-}
-
-function allocateDisplayAmounts(entries, total) {
-  const amounts = entries.map(([id, amount], index) => ({
-    id,
-    amount: Math.floor(amount),
-    remainder: amount - Math.floor(amount),
-    index,
-  }));
-  const remaining = roundDisplay(total) - amounts.reduce((sum, { amount }) => sum + amount, 0);
-
-  amounts.sort((first, second) => second.remainder - first.remainder || first.index - second.index);
-  for (let index = 0; index < remaining; index += 1) amounts[index].amount += 1;
-  return Object.fromEntries(amounts.map(({ id, amount }) => [id, amount]));
-}
 
 function compareAmountsThenNames([firstId, firstAmount], [secondId, secondAmount], budgetMap) {
   return secondAmount - firstAmount ||
@@ -24,9 +8,10 @@ function compareAmountsThenNames([firstId, firstAmount], [secondId, secondAmount
 }
 
 export function calculateTargetComparison(spent, dailyTarget, days) {
-  const target = dailyTarget * days;
-  const difference = Math.abs(target - spent);
-  const result = spent === target ? 'on' : spent > target ? 'over' : 'under';
+  const target = roundMoney(dailyTarget * days);
+  const roundedSpent = roundMoney(spent);
+  const difference = roundMoney(Math.abs(target - roundedSpent));
+  const result = roundedSpent === target ? 'on' : roundedSpent > target ? 'over' : 'under';
   return { target, difference, result };
 }
 
@@ -41,15 +26,15 @@ export function formatAutomaticSummary({
   const entries = Object.entries(totals).sort((first, second) =>
     compareAmountsThenNames(first, second, budgetMap),
   );
-  const spent = entries.reduce((sum, [, amount]) => sum + amount, 0);
-  const displayAmounts = allocateDisplayAmounts(entries, spent);
+  const spent = roundMoney(entries.reduce((sum, [, amount]) => sum + amount, 0));
   const comparison = calculateTargetComparison(spent, dailyTarget, period.days);
   const categoryLines = entries.length
-    ? entries.map(([id]) => `• ${budgetMap[id] ?? id}: $${displayAmounts[id]}`).join('\n')
+    ? entries.map(([id, amount]) =>
+      `• ${budgetMap[id] ?? id}: $${formatMoney(amount)}`).join('\n')
     : 'No expenses.';
   const resultLine = comparison.result === 'on'
     ? 'On target'
-    : `$${roundDisplay(comparison.difference)} ${comparison.result} target`;
+    : `$${formatMoney(comparison.difference)} ${comparison.result} target`;
   const title = periodType === 'weekly'
     ? 'Weekly spending summary'
     : 'Monthly spending summary';
@@ -58,7 +43,8 @@ export function formatAutomaticSummary({
   const inclusiveEndDate = inclusiveEnd.toISOString().slice(0, 10);
 
   return `${title}\n${period.start} to ${inclusiveEndDate}\n\n` +
-    `${categoryLines}\n\nTotal: $${roundDisplay(spent)}\nTarget: $${roundDisplay(comparison.target)}\n${resultLine}`;
+    `${categoryLines}\n\nTotal: $${formatMoney(spent)}\n` +
+    `Target: $${formatMoney(comparison.target)}\n${resultLine}`;
 }
 
 export function formatMonthlySummary(budgets, totals) {
@@ -68,16 +54,16 @@ export function formatMonthlySummary(budgets, totals) {
   );
   if (!entries.length) return 'No expenses this month.';
 
-  const total = entries.reduce((sum, [, spent]) => sum + spent, 0);
-  const displayAmounts = allocateDisplayAmounts(entries, total);
+  const total = roundMoney(entries.reduce((sum, [, spent]) => sum + spent, 0));
   const lines = entries.map(([id, spent]) => {
     const percentage = total > 0 ? (spent / total) * 100 : 0;
     const filledSegments = Math.round((percentage / 100) * BAR_WIDTH);
     const bar = '█'.repeat(filledSegments) + '░'.repeat(BAR_WIDTH - filledSegments);
-    return `• ${budgetMap[id] ?? id}: $${displayAmounts[id]} · ${roundDisplay(percentage)}% ${bar}`;
+    return `• ${budgetMap[id] ?? id}: $${formatMoney(spent)} · ` +
+      `${Math.round(percentage)}% ${bar}`;
   });
 
-  return `Monthly expenses:\n${lines.join('\n')}\n\nTotal: $${roundDisplay(total)}`;
+  return `Monthly expenses:\n${lines.join('\n')}\n\nTotal: $${formatMoney(total)}`;
 }
 
 export function formatVerboseMonthlySummary(budgets, expenses) {
@@ -102,7 +88,7 @@ export function formatVerboseMonthlySummary(budgets, expenses) {
         first.id.localeCompare(second.id),
       )
       .slice(0, 2)
-      .map((expense) => `  • ${expense.description}: $${roundDisplay(expense.amount)}`);
+      .map((expense) => `  • ${expense.description}: $${formatMoney(expense.amount)}`);
     return `${budgetMap[categoryId] ?? categoryId}:\n${topExpenses.join('\n')}`;
   });
 

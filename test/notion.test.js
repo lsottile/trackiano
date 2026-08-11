@@ -32,12 +32,14 @@ const {
   claimSummaryPeriod,
   createExpense,
   createExpenseAndGetTotalToday,
+  deleteExpense,
   getExpensesInRange,
   getMonthlyExpenseDetails,
   getMonthlyExpenses,
   getSettings,
   getTotalSpentToday,
   setDailyTarget,
+  updateExpenseBudget,
 } = await import('../src/notion.js');
 
 function expensePage(categoryId, amount) {
@@ -52,13 +54,16 @@ function expensePage(categoryId, amount) {
 test('creates expense with Guatemala local date for UTC instant still previous day locally', async () => {
   notionRequests.length = 0;
 
-  await createExpense({
+  pageCreateResponses.push({ id: 'expense-1' });
+  const expenseId = await createExpense({
     description: 'coffee',
-    amount: 5.3,
+    amount: 5.305,
     budgetId: 'budget-food',
     now: new Date('2026-07-20T05:30:00.000Z'),
   });
 
+  assert.equal(expenseId, 'expense-1');
+  assert.equal(notionRequests[0].body.properties.amount.number, 5.31);
   assert.equal(
     notionRequests[0].body.properties.date.date.start,
     '2026-07-19',
@@ -96,18 +101,33 @@ test('uses one timestamp for the pre-write total and expense date', async (t) =>
     }
   });
 
-  const total = await createExpenseAndGetTotalToday({
+  pageCreateResponses.push({ id: 'expense-1' });
+  const result = await createExpenseAndGetTotalToday({
     description: 'coffee',
     amount: 5,
     budgetId: 'budget-food',
   });
 
-  assert.equal(total, 10);
+  assert.deepEqual(result, { expenseId: 'expense-1', totalToday: 10 });
   assert.equal(clockReads, 1);
   assert.equal(notionRequests[0].path, 'databases/test-expenses/query');
   assert.equal(notionRequests[1].path, 'pages');
   assert.equal(notionRequests[0].body.filter.date.equals, '2026-07-21');
   assert.equal(notionRequests[1].body.properties.date.date.start, '2026-07-21');
+});
+
+test('updates or deletes the exact expense selected in Telegram', async () => {
+  notionRequests.length = 0;
+
+  await updateExpenseBudget('expense-1', 'budget-investments');
+  await deleteExpense('expense-1');
+
+  assert.equal(notionRequests[0].path, 'pages/expense-1');
+  assert.deepEqual(notionRequests[0].body.properties, {
+    budget: { relation: [{ id: 'budget-investments' }] },
+  });
+  assert.equal(notionRequests[1].path, 'pages/expense-1');
+  assert.equal(notionRequests[1].body.archived, true);
 });
 
 test('aggregates every Notion page for the current app calendar month', async () => {

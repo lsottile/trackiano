@@ -1,3 +1,4 @@
+import { formatMoney, roundMoney } from './money.js';
 import { getSettings, setDailyTarget } from './notion.js';
 import {
   getLatestClosedMonthlyPeriod,
@@ -9,7 +10,7 @@ export function parseTargetAmount(input) {
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new Error('Target must be a positive number.');
   }
-  return amount;
+  return roundMoney(amount);
 }
 
 export async function handleTargetCommand(
@@ -34,7 +35,7 @@ export async function handleTargetCommand(
     if (settings.dailyTarget === null) {
       return ctx.reply('Daily target is not set. Use /target <amount>.');
     }
-    return ctx.reply(`Current daily target: $${settings.dailyTarget}`);
+    return ctx.reply(`Current daily target: $${formatMoney(settings.dailyTarget)}`);
   }
 
   let dailyTarget;
@@ -45,5 +46,5 @@ export async function handleTargetCommand(
   }
 
   await persistDailyTarget(dailyTarget, initialPeriodKeys);
-  return ctx.reply(`Daily target set to $${dailyTarget}`);
+  return ctx.reply(`Daily target set to $${formatMoney(dailyTarget)}`);
 }
