@@ -6,11 +6,15 @@
   "scripts": {
     "start": "node src/bot.js",
     "notifications": "node src/notifications.js",
-    "test": "node --test"
+    "test": "node --test",
+    "db:migrate": "node scripts/migrate-db.js",
+    "migrate:notion": "node scripts/migrate-notion-data.js",
+    "test:postgres": "node --test test/postgres.integration.test.js"
   },
   "dependencies": {
     "@notionhq/client": "^2.2.15",
     "dotenv": "^16.4.5",
-    "grammy": "^1.26.0"
+    "grammy": "^1.26.0",
+    "pg": "^8.23.0"
   }
 }

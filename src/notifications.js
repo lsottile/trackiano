@@ -6,7 +6,7 @@ import {
   getBudgets,
   getExpensesInRange,
   getSettings,
-} from './notion.js';
+} from './storage.js';
 import {
   getLatestClosedMonthlyPeriod,
   getLatestClosedWeeklyPeriod,

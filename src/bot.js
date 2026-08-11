@@ -14,7 +14,7 @@ import {
   createBudget,
   deleteExpense,
   updateExpenseBudget,
-} from "./notion.js";
+} from "./storage.js";
 import { formatMoney, roundMoney } from "./money.js";
 import { getPeriodStart, daysUntilPayday } from "./pay.js";
 import { formatMonthlySummary, formatVerboseMonthlySummary } from "./summary.js";
