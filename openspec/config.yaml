@@ -2,10 +2,10 @@ schema: spec-driven
 
 context: |
   Project: Trackiano — a Telegram-first personal expense tracker.
-  Stack: Node.js ES modules, grammY, Notion API, Railway services, Node test runner.
-  Current production scope: Telegram bot plus scheduled notifications. Takenos ingestion exists only in deferred local work and is out of scope for this change.
-  Current persistence: Notion databases for expenses, budgets, and settings.
-  Target persistence: Supabase PostgreSQL with a multi-user-ready schema while initially operating with one user.
+  Stack: Node.js ES modules, grammY, Supabase PostgreSQL, Railway services, Node test runner.
+  Current production scope: Telegram bot plus scheduled notifications, backed by Supabase PostgreSQL.
+  Current persistence: Supabase PostgreSQL is production; Notion is retained only for rollback and migration support.
+  Change boundary: improve category inference after the completed PostgreSQL cutover; Takenos remains excluded.
   Product direction: an embedded Telegram Mini App will consume a shared authenticated API in a later change.
   Strict TDD: enabled with the Node test runner.
 
@@ -26,7 +26,7 @@ rules:
   tasks:
     - Keep tests with the behavior they protect
     - Deliver as one PR unless a critical review or safety risk requires a split
-    - Keep the forecast within a 2500 changed-line review budget
+    - Keep the forecast within a 3500 changed-line review budget
   apply:
     - Follow strict RED, GREEN, TRIANGULATE, REFACTOR evidence
     - Do not mutate Railway, Notion, or any paid service without explicit confirmation
@@ -55,4 +55,4 @@ testing:
 mode: both
 execution_mode: auto
 chained_pr_strategy: single-pr-default
-review_budget: 2500
+review_budget: 3500

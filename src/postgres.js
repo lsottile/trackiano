@@ -1,6 +1,7 @@
 import { createDatabase } from './db.js';
 import { roundMoney } from './money.js';
 import { formatDateInTimeZone } from './periods.js';
+import { fingerprintDescription } from './descriptionFingerprint.js';
 
 function money(value) {
   return roundMoney(Number(value));
@@ -108,6 +109,65 @@ export function createPostgresRepository(database, {
         name: row.name,
         amount: money(row.amount),
       }));
+    },
+
+    async findLearnedBudget(descriptionFingerprint) {
+      if (!/^[0-9a-f]{64}$/.test(descriptionFingerprint)) {
+        throw new Error('Description fingerprint must be exactly 64 lowercase hexadecimal characters.');
+      }
+      const userId = await getUserId();
+      const result = await database.query(
+        `SELECT b.id, b.name
+         FROM category_inference_rules AS r
+         JOIN budgets AS b
+           ON b.id = r.budget_id
+          AND b.user_id = r.user_id
+         WHERE r.user_id = $1
+           AND r.description_fingerprint = decode($2, 'hex')
+         LIMIT 1`,
+        [userId, descriptionFingerprint],
+      );
+      return result.rows[0] ?? null;
+    },
+
+    async recategorizeExpenseAndLearn(expenseId, budgetId) {
+      const userId = await getUserId();
+      return database.transaction(async (transaction) => {
+        await transaction.query("SET LOCAL statement_timeout = '5s'");
+        await transaction.query("SET LOCAL lock_timeout = '1s'");
+        const locked = await transaction.query(
+          `SELECT e.description
+           FROM expenses AS e
+           JOIN budgets AS b
+             ON b.id = $2
+            AND b.user_id = e.user_id
+           WHERE e.id = $1
+             AND e.user_id = $3
+             AND e.deleted_at IS NULL
+           FOR UPDATE OF e
+           FOR KEY SHARE OF b`,
+          [expenseId, budgetId, userId],
+        );
+        if (locked.rowCount !== 1 || locked.rows.length !== 1) {
+          throw new Error('Expense or budget not found.');
+        }
+        const descriptionFingerprint = fingerprintDescription(locked.rows[0].description);
+        const updated = await transaction.query(
+          `UPDATE expenses
+           SET budget_id = $2, updated_at = now()
+           WHERE id = $1 AND user_id = $3 AND deleted_at IS NULL`,
+          [expenseId, budgetId, userId],
+        );
+        if (updated.rowCount !== 1) throw new Error(`Expense not found: ${expenseId}`);
+        await transaction.query(
+          `INSERT INTO category_inference_rules
+             (user_id, description_fingerprint, budget_id)
+           VALUES ($1, decode($2, 'hex'), $3)
+           ON CONFLICT (user_id, description_fingerprint)
+           DO UPDATE SET budget_id = EXCLUDED.budget_id, updated_at = now()`,
+          [userId, descriptionFingerprint, budgetId],
+        );
+      });
     },
 
     async getPeriodSpent(categoryId, periodStart) {

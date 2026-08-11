@@ -28,3 +28,27 @@ test('rejects an unknown storage backend', () => {
     /Unknown STORAGE_BACKEND: mongo/,
   );
 });
+
+test('PostgreSQL application facade exposes feature methods', async () => {
+  const calls = [];
+  const storage = createStorage({
+    backend: 'postgres',
+    postgresRepository: {
+      findLearnedBudget: async (...args) => calls.push(['find', ...args]),
+      recategorizeExpenseAndLearn: async (...args) => calls.push(['change', ...args]),
+    },
+  });
+
+  await storage.findLearnedBudget('a'.repeat(64));
+  await storage.recategorizeExpenseAndLearn('expense', 'budget');
+  assert.deepEqual(calls, [
+    ['find', 'a'.repeat(64)],
+    ['change', 'expense', 'budget'],
+  ]);
+});
+
+test('historical Notion facade does not expose PostgreSQL feature methods', () => {
+  const storage = createStorage({ backend: 'notion', notionRepository: {} });
+  assert.equal(Object.hasOwn(storage, 'findLearnedBudget'), false);
+  assert.equal(Object.hasOwn(storage, 'recategorizeExpenseAndLearn'), false);
+});

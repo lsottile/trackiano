@@ -1,0 +1,22 @@
+change: improve-category-inference
+project: trackiano
+phase: apply
+status: remediation-focused-green
+artifact_store: both
+execution_mode: auto
+chained_pr_strategy: single-pr-default
+review_budget: 3500
+scope:
+  follows: migrate-notion-to-postgresql
+  separate_change: true
+  excluded:
+    - Takenos
+artifacts:
+  exploration: true
+  proposal: true
+  specs: true
+  design: true
+  tasks: true
+  apply_progress: true
+  verify_report: true
+last_updated: 2026-08-11

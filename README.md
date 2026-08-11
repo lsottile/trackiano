@@ -1,6 +1,6 @@
 # Trackiano
 
-Telegram bot that logs expenses through a selectable Notion or PostgreSQL storage backend.
+Telegram expense bot running on Node.js 22 with PostgreSQL storage. `src/notion.js` is retained unchanged only for historical migration and pre-feature rollback tooling; the current application does not support Notion as a runtime backend.
 
 ## Usage
 
@@ -8,13 +8,12 @@ Send a message with the format:
 ```
 {description} {amount}
 {description} {amount} {category}
+{description} {amount} | {category}
 ```
-Examples: `coffee 50`, `coffee 50 food`
+Examples: `coffee 50`, `hotel 50 Travel and Lodging`, `snack 5 | Category 2`.
+Amounts use finite decimal syntax only; comma decimals, hexadecimal, binary, and exponent forms are rejected. Use the literal `|` delimiter for numeric-suffixed categories or whenever an explicit boundary is clearer. Ambiguous undelimited numeric suffixes fail closed.
 
-When the category is omitted, the bot infers it with OpenRouter using only the
-allowed category names from Notion plus the expense description and amount. If it
-cannot infer a safe match, it asks you to resend the expense with an explicit
-category.
+When category is omitted, the bot normalizes the current description with NFKC, trims/collapses whitespace, lowercases it, and hashes it with SHA-256. A same-user learned correction is checked locally first. Fingerprints are pseudonymous and are never logged or sent as history. On a miss, one OpenRouter request uses current description/amount, the current PostgreSQL category allowlist, and static bilingual guidance, with an 8-second maximum and no retry. Low-confidence results write nothing and return complete resend examples only when the reply is at most 4,096 JavaScript UTF-16 units; otherwise they use a generic safe response.
 
 ## Commands
 
@@ -38,14 +37,14 @@ category.
 |----------|----------|-------------|
 | `TELEGRAM_TOKEN` | ✓ | Telegram bot token |
 | `TELEGRAM_OWNER_ID` | ✓ | Your Telegram user ID (only you can use the bot) |
-| `STORAGE_BACKEND` | — | `notion` (safe pre-cutover default) or `postgres` |
+| `STORAGE_BACKEND` | ✓ | Must be the exact value `postgres`; unset, case variants, and `notion` fail startup |
 | `DATABASE_URL` | PostgreSQL | PostgreSQL connection string |
 | `PGSSLMODE` | PostgreSQL | `require` with a trusted root, or `disable` only for disposable local/test databases |
 | `PGSSLROOTCERT` | TLS mode `require` | Trusted CA path; Supabase uses `certs/supabase-root-2021.crt` |
 | `NOTION_TOKEN` | Notion/migration | Notion integration token |
-| `NOTION_EXPENSES_DB_ID` | ✓ | Notion expenses database ID |
-| `NOTION_BUDGETS_DB_ID` | ✓ | Notion budgets database ID |
-| `NOTION_SETTINGS_DB_ID` | ✓ | Dedicated Notion settings database ID |
+| `NOTION_EXPENSES_DB_ID` | Migration only | Historical Notion expenses database ID |
+| `NOTION_BUDGETS_DB_ID` | Migration only | Historical Notion budgets database ID |
+| `NOTION_SETTINGS_DB_ID` | Migration only | Historical Notion settings database ID |
 | `OPENROUTER_API_KEY` | For inferred categories | OpenRouter API key used when the expense category is omitted |
 | `OPENROUTER_MODEL` | — | OpenRouter model for category inference, defaults to `google/gemini-2.5-flash` |
 | `APP_LANGUAGE` | — | User language stored during migration, defaults to `es` |
@@ -55,11 +54,13 @@ category.
 
 ## Setup
 
+Node.js **22.x** is required (`>=22 <23`). Both bot and notification entrypoints fail preflight before PostgreSQL construction, provider traffic, scheduling, or polling when the runtime/backend contract is not met.
+
 ```bash
-npm install
+npm ci
 cp .env.example .env
-# fill in the variables
-node src/bot.js
+# set STORAGE_BACKEND=postgres and fill in the required variables
+npm start
 ```
 
 ## Deploy
@@ -70,9 +71,11 @@ The long-running bot and automatic summaries use separate Railway services:
 - Notification service: run `npm run notifications` as a Railway cron service.
 - Schedule the notification service periodically in UTC; every 15 minutes is recommended. The command checks calendar periods in `APP_TIMEZONE` and exits after each run.
 
-Create an empty dedicated settings database manually in Notion and share it with
-the existing integration. Add these properties, but do not create the singleton
-row yourself:
+### Historical Notion rollback setup
+
+The pre-feature rollback image requires a dedicated settings database shared with
+the historical Notion integration. This is not a runtime setup path for the new
+PostgreSQL-only image. Its properties are:
 
 | Property | Type |
 |----------|------|
@@ -94,15 +97,12 @@ calendar month and compare total spend with `days in month × Daily target`. If
 Monday is also the first day of a month, both summaries are processed
 independently.
 
-Delivery uses a durable claim before calling Telegram. This provides an
-at-most-once tradeoff: repeated runs and restarts do not resend a claimed period,
-but a Telegram failure or process crash after the claim leaves the notification
-unsent and it will not be retried. Exactly-once delivery is impossible across
-Notion and Telegram without a shared transaction. Run exactly one Railway cron
-service, keep executions non-overlapping, and do not run notifications manually
-while the cron can be active. Notion claims are not transactional across processes, so concurrent Notion-backed
-runs can race and send duplicates. PostgreSQL claims use one conditional atomic update,
-so only one concurrent worker can claim a given user and period.
+Delivery uses a durable PostgreSQL claim before calling Telegram. Repeated runs
+and restarts do not resend a claimed period, and one conditional atomic update
+allows only one concurrent worker to claim it. A Telegram failure after the claim
+leaves the notification unsent and it is not retried. Run exactly one Railway cron
+service, keep executions non-overlapping, and do not invoke notifications manually
+while the cron can be active.
 
 Railway and Notion setup is intentionally manual and must be performed only with
 explicit approval; normal tests do not mutate either remote environment.
@@ -114,7 +114,7 @@ to `TELEGRAM_OWNER_ID`. Takenos is intentionally not part of this schema or migr
 Money uses `NUMERIC(12,2)`, expense dates remain local calendar dates, and deleted
 expenses are retained with a soft-delete timestamp.
 
-Apply versioned schema migrations only after configuring a local or approved database:
+Deploy migration-first: apply versioned schema migrations only after configuring an approved database and confirming backup/rollback readiness and migration-runner exclusivity. Migration `003_category_inference_rules.sql` is additive, performs no backfill, and retains learned rules independently of source expenses. Normal `npm test` skips the opt-in PostgreSQL integration scenario; `npm run test:postgres` fails unless `TEST_DATABASE_URL` is explicitly set.
 
 ```bash
 DATABASE_URL=postgres://... PGSSLMODE=require \
@@ -139,11 +139,7 @@ Recommended cutover:
 5. Require a matching reconciliation report before setting `STORAGE_BACKEND=postgres`.
 6. Restart one bot and one notification worker and observe them before resuming normal use.
 
-Rollback is immediate only before PostgreSQL is reopened for user writes. After any
-expense has been accepted by PostgreSQL, first pause both services and reconcile or
-manually export those PostgreSQL-only changes; switching directly to unchanged Notion
-would hide them. Do not accept writes in both backends: this migration intentionally
-does not dual-write. Keep Notion unchanged during the initial observation window.
+For this feature, emergency rollback means redeploying the exact pre-feature image/commit. Do not select Notion in the new image, rewrite expenses or categories, or run a reverse migration. Leave `category_inference_rules` and its learned data intact; a later removal requires proving that no deployed version reads or writes it. Production migration, cutover, and rollback are separate operator-confirmed remote actions.
 
 The importer refuses to overwrite a non-empty divergent PostgreSQL target. An identical
 retry is a no-op; changed source or target data requires explicit operator resolution.

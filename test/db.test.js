@@ -100,6 +100,57 @@ test('rolls back failed transactions and always releases the client', async () =
   assert.deepEqual(pool.events, ['connect', 'BEGIN', 'work', 'ROLLBACK', 'release']);
 });
 
+test('preserves setup/work errors while surfacing rollback and release failures', async () => {
+  for (const failingSql of ['SET LOCAL statement_timeout = 8000', 'work']) {
+    const events = [];
+    const primaryError = new Error(`${failingSql} failed`);
+    const rollbackError = new Error('rollback failed');
+    const releaseError = new Error('release failed');
+    const pool = {
+      on() {},
+      async connect() {
+        return {
+          async query(sql) {
+            events.push(sql);
+            if (sql === failingSql) throw primaryError;
+            if (sql === 'ROLLBACK') throw rollbackError;
+          },
+          async release() {
+            events.push('release');
+            throw releaseError;
+          },
+        };
+      },
+    };
+    const db = createDatabase({ pool });
+
+    await assert.rejects(
+      db.transaction((transaction) => transaction.query(failingSql)),
+      (error) => error instanceof AggregateError
+        && error.errors[0] === primaryError
+        && error.errors.includes(rollbackError)
+        && error.errors.includes(releaseError),
+    );
+    assert.deepEqual(events, ['BEGIN', failingSql, 'ROLLBACK', 'release']);
+  }
+});
+
+test('rejects a committed transaction when asynchronous release fails', async () => {
+  const releaseError = new Error('release failed');
+  const pool = {
+    on() {},
+    async connect() {
+      return {
+        async query() {},
+        async release() { throw releaseError; },
+      };
+    },
+  };
+  const db = createDatabase({ pool });
+
+  await assert.rejects(db.transaction(async () => 'done'), (error) => error === releaseError);
+});
+
 test('applies pending SQL migrations in filename order and skips applied versions', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'trackiano-migrations-'));
   await writeFile(path.join(directory, '002_second.sql'), 'SELECT 2;');
