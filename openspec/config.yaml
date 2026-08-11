@@ -1,0 +1,58 @@
+schema: spec-driven
+
+context: |
+  Project: Trackiano — a Telegram-first personal expense tracker.
+  Stack: Node.js ES modules, grammY, Notion API, Railway services, Node test runner.
+  Current production scope: Telegram bot plus scheduled notifications. Takenos ingestion exists only in deferred local work and is out of scope for this change.
+  Current persistence: Notion databases for expenses, budgets, and settings.
+  Target persistence: Supabase PostgreSQL with a multi-user-ready schema while initially operating with one user.
+  Product direction: an embedded Telegram Mini App will consume a shared authenticated API in a later change.
+  Strict TDD: enabled with the Node test runner.
+
+rules:
+  proposal:
+    - State the user-visible and operational problem, rollback plan, and data migration safety checks
+    - Keep Takenos and the Telegram Mini App out of the first migration slice
+    - Stop only for critical risk, irreversible data-loss risk, or paid infrastructure decisions
+  specs:
+    - Use Given/When/Then acceptance scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+    - Cover data isolation, cent precision, timezone behavior, idempotent migration, and rollback
+  design:
+    - Keep Telegram bot behavior unchanged during the persistence migration
+    - Use a repository boundary so bot and notification code do not issue direct SQL
+    - Use PostgreSQL constraints and transactions for financial integrity
+    - Preserve a future path to multiple users without implementing public onboarding yet
+  tasks:
+    - Keep tests with the behavior they protect
+    - Deliver as one PR unless a critical review or safety risk requires a split
+    - Keep the forecast within a 2500 changed-line review budget
+  apply:
+    - Follow strict RED, GREEN, TRIANGULATE, REFACTOR evidence
+    - Do not mutate Railway, Notion, or any paid service without explicit confirmation
+    - Do not commit, push, or open a PR without explicit user approval
+    tdd: true
+    test_command: "npm test"
+  verify:
+    test_command: "npm test"
+    coverage_threshold: 0
+  archive:
+    - Record migration reconciliation results, rollback readiness, and deferred product risks
+
+testing:
+  strict_tdd: true
+  runner: "npm test"
+  layers:
+    unit: true
+    integration: true
+    e2e: false
+  coverage: false
+  quality:
+    linter: false
+    type_checker: false
+    formatter: false
+
+mode: both
+execution_mode: auto
+chained_pr_strategy: single-pr-default
+review_budget: 2500

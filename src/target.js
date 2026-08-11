@@ -1,5 +1,5 @@
 import { formatMoney, roundMoney } from './money.js';
-import { getSettings, setDailyTarget } from './notion.js';
+import { getSettings, setDailyTarget } from './storage.js';
 import {
   getLatestClosedMonthlyPeriod,
   getLatestClosedWeeklyPeriod,
