@@ -45,21 +45,47 @@ export function createDatabase({
     },
     async transaction(work) {
       const client = await activePool.connect();
+      const cleanupErrors = [];
+      let primaryError;
+      let result;
       try {
         await client.query('BEGIN');
-        const result = await work({
+        result = await work({
           query(sql, params) {
             return client.query(sql, params);
           },
         });
         await client.query('COMMIT');
-        return result;
       } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
+        primaryError = error;
+        try {
+          await client.query('ROLLBACK');
+        } catch (rollbackError) {
+          cleanupErrors.push(rollbackError);
+        }
       } finally {
-        client.release();
+        try {
+          await client.release();
+        } catch (releaseError) {
+          cleanupErrors.push(releaseError);
+        }
       }
+
+      if (primaryError) {
+        if (cleanupErrors.length > 0) {
+          throw new AggregateError(
+            [primaryError, ...cleanupErrors],
+            'Transaction and cleanup failed.',
+            { cause: primaryError },
+          );
+        }
+        throw primaryError;
+      }
+      if (cleanupErrors.length === 1) throw cleanupErrors[0];
+      if (cleanupErrors.length > 1) {
+        throw new AggregateError(cleanupErrors, 'Transaction cleanup failed.');
+      }
+      return result;
     },
     close() {
       return activePool.end();

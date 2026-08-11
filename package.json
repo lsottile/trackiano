@@ -3,13 +3,16 @@
   "version": "1.0.0",
   "type": "module",
   "main": "src/bot.js",
+  "engines": {
+    "node": ">=22 <23"
+  },
   "scripts": {
     "start": "node src/bot.js",
     "notifications": "node src/notifications.js",
     "test": "node --test",
     "db:migrate": "node scripts/migrate-db.js",
     "migrate:notion": "node scripts/migrate-notion-data.js",
-    "test:postgres": "node --test test/postgres.integration.test.js"
+    "test:postgres": "node scripts/run-postgres-tests.js"
   },
   "dependencies": {
     "@notionhq/client": "^2.2.15",

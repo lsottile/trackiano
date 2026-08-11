@@ -1,7 +1,7 @@
 import * as notionRepository from './notion.js';
 import { createDefaultPostgresRepository } from './postgres.js';
 
-const METHODS = [
+const BASE_METHODS = [
   'findBudgetId',
   'getBudgets',
   'getPeriodSpent',
@@ -22,6 +22,11 @@ const METHODS = [
   'createExpense',
 ];
 
+const POSTGRES_FEATURE_METHODS = [
+  'findLearnedBudget',
+  'recategorizeExpenseAndLearn',
+];
+
 export function createStorage({
   backend = 'notion',
   notionRepository: notion = notionRepository,
@@ -33,30 +38,42 @@ export function createStorage({
   const repository = backend === 'notion'
     ? notion
     : (postgresRepository ?? createDefaultPostgresRepository());
+  const methods = backend === 'postgres'
+    ? [...BASE_METHODS, ...POSTGRES_FEATURE_METHODS]
+    : BASE_METHODS;
 
-  return Object.fromEntries(METHODS.map((method) => [
+  return Object.fromEntries(methods.map((method) => [
     method,
     (...args) => repository[method](...args),
   ]));
 }
 
-const storage = createStorage({ backend: process.env.STORAGE_BACKEND ?? 'notion' });
+let applicationStorage;
+function callApplicationStorage(method, args) {
+  applicationStorage ??= createStorage({
+    backend: 'postgres',
+    postgresRepository: createDefaultPostgresRepository(),
+  });
+  return applicationStorage[method](...args);
+}
 
-export const findBudgetId = storage.findBudgetId;
-export const getBudgets = storage.getBudgets;
-export const getPeriodSpent = storage.getPeriodSpent;
-export const getExpensesInRange = storage.getExpensesInRange;
-export const getMonthlyExpenses = storage.getMonthlyExpenses;
-export const getMonthlyExpenseDetails = storage.getMonthlyExpenseDetails;
-export const getSettings = storage.getSettings;
-export const setDailyTarget = storage.setDailyTarget;
-export const claimSummaryPeriod = storage.claimSummaryPeriod;
-export const getTotalSpentInPeriod = storage.getTotalSpentInPeriod;
-export const getTotalSpentToday = storage.getTotalSpentToday;
-export const createExpenseAndGetTotalToday = storage.createExpenseAndGetTotalToday;
-export const getCategoryExpenses = storage.getCategoryExpenses;
-export const createBudget = storage.createBudget;
-export const getLastExpense = storage.getLastExpense;
-export const deleteExpense = storage.deleteExpense;
-export const updateExpenseBudget = storage.updateExpenseBudget;
-export const createExpense = storage.createExpense;
+export const findBudgetId = (...args) => callApplicationStorage('findBudgetId', args);
+export const getBudgets = (...args) => callApplicationStorage('getBudgets', args);
+export const getPeriodSpent = (...args) => callApplicationStorage('getPeriodSpent', args);
+export const getExpensesInRange = (...args) => callApplicationStorage('getExpensesInRange', args);
+export const getMonthlyExpenses = (...args) => callApplicationStorage('getMonthlyExpenses', args);
+export const getMonthlyExpenseDetails = (...args) => callApplicationStorage('getMonthlyExpenseDetails', args);
+export const getSettings = (...args) => callApplicationStorage('getSettings', args);
+export const setDailyTarget = (...args) => callApplicationStorage('setDailyTarget', args);
+export const claimSummaryPeriod = (...args) => callApplicationStorage('claimSummaryPeriod', args);
+export const getTotalSpentInPeriod = (...args) => callApplicationStorage('getTotalSpentInPeriod', args);
+export const getTotalSpentToday = (...args) => callApplicationStorage('getTotalSpentToday', args);
+export const createExpenseAndGetTotalToday = (...args) => callApplicationStorage('createExpenseAndGetTotalToday', args);
+export const getCategoryExpenses = (...args) => callApplicationStorage('getCategoryExpenses', args);
+export const createBudget = (...args) => callApplicationStorage('createBudget', args);
+export const getLastExpense = (...args) => callApplicationStorage('getLastExpense', args);
+export const deleteExpense = (...args) => callApplicationStorage('deleteExpense', args);
+export const updateExpenseBudget = (...args) => callApplicationStorage('updateExpenseBudget', args);
+export const createExpense = (...args) => callApplicationStorage('createExpense', args);
+export const findLearnedBudget = (...args) => callApplicationStorage('findLearnedBudget', args);
+export const recategorizeExpenseAndLearn = (...args) => callApplicationStorage('recategorizeExpenseAndLearn', args);

@@ -1,8 +1,13 @@
 import "dotenv/config";
 import { pathToFileURL } from "node:url";
-import { Bot } from "grammy";
-import { inferCategory, selectInferredBudget } from "./inferCategory.js";
+import { Bot, Composer } from "grammy";
+import { inferCategory, selectTopCandidate } from "./inferCategory.js";
 import { parseMessage } from "./parseMessage.js";
+import { fingerprintDescription } from "./descriptionFingerprint.js";
+import {
+  buildLowConfidenceReply,
+  GENERIC_SAFE_CATEGORY_RESPONSE,
+} from "./categoryResponses.js";
 import {
   findBudgetId,
   createExpenseAndGetTotalToday,
@@ -13,15 +18,34 @@ import {
   getPeriodSpent,
   createBudget,
   deleteExpense,
-  updateExpenseBudget,
+  findLearnedBudget,
+  recategorizeExpenseAndLearn,
 } from "./storage.js";
 import { formatMoney, roundMoney } from "./money.js";
 import { getPeriodStart, daysUntilPayday } from "./pay.js";
 import { formatMonthlySummary, formatVerboseMonthlySummary } from "./summary.js";
 import { handleTargetCommand } from "./target.js";
+import { assertRuntimeAndBackend, assertRuntimeEnvironment } from "./runtimeConfig.js";
 
-const bot = new Bot(process.env.TELEGRAM_TOKEN);
+const isDirectExecution = Boolean(
+  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href,
+);
+if (isDirectExecution) { assertRuntimeAndBackend(); assertRuntimeEnvironment(); }
+
 const OWNER_ID = Number(process.env.TELEGRAM_OWNER_ID);
+const bot = new Composer();
+
+function defaultOperationReporter({ operation }) {
+  console.error(JSON.stringify({ operation, outcome: "failure" }));
+}
+
+async function reportFailure(reporter, operation) {
+  try {
+    await reporter({ operation, outcome: "failure" });
+  } catch {
+    // Operational reporting must never affect user-safe behavior.
+  }
+}
 
 function encodeId(id) {
   return Buffer.from(id.replaceAll("-", ""), "hex").toString("base64url");
@@ -59,7 +83,8 @@ export function decodeExpenseCallback(data) {
 export function registerExpenseActionHandlers(composer, {
   getBudgets: readBudgets = getBudgets,
   deleteExpense: removeExpense = deleteExpense,
-  updateExpenseBudget: changeExpenseBudget = updateExpenseBudget,
+  recategorizeExpenseAndLearn: changeExpenseBudget = recategorizeExpenseAndLearn,
+  reportOperation = defaultOperationReporter,
 } = {}) {
   return composer.on("callback_query:data", async (ctx, next) => {
     const callback = decodeExpenseCallback(ctx.callbackQuery.data);
@@ -90,7 +115,12 @@ export function registerExpenseActionHandlers(composer, {
 
       const budget = budgets.find((item) => item.id === callback.budgetId);
       if (!budget) return ctx.reply("La categoría ya no está disponible.");
-      await changeExpenseBudget(callback.expenseId, budget.id);
+      try {
+        await changeExpenseBudget(callback.expenseId, budget.id);
+      } catch {
+        await reportFailure(reportOperation, "correction_write");
+        return ctx.reply("No pude actualizar ese gasto. Probá de nuevo.");
+      }
       return ctx.reply(`Categoría actualizada a ${budget.name} ✓`);
     } catch {
       return ctx.reply("No pude actualizar ese gasto. Probá de nuevo.");
@@ -231,10 +261,12 @@ bot.command("new", async (ctx) => {
 
 export async function handleExpenseMessage(ctx, {
   findBudgetId: readBudgetId = findBudgetId,
+  findLearnedBudget: readLearnedBudget = findLearnedBudget,
   getBudgets: readBudgets = getBudgets,
   inferCategory: categorize = inferCategory,
-  selectInferredBudget: selectBudget = selectInferredBudget,
+  selectTopCandidate: selectCandidate = selectTopCandidate,
   createExpenseAndGetTotalToday: writeExpense = createExpenseAndGetTotalToday,
+  reportOperation = defaultOperationReporter,
 } = {}) {
   try {
     const parsed = parseMessage(ctx.message.text);
@@ -252,32 +284,51 @@ export async function handleExpenseMessage(ctx, {
         );
       }
     } else {
-      const budgets = await readBudgets();
-      let inference;
+      const fingerprint = fingerprintDescription(description);
+      let learnedBudget;
       try {
-        inference = await categorize({ description, amount, budgets });
+        learnedBudget = await readLearnedBudget(fingerprint);
       } catch {
-        return ctx.reply(
-          "No pude inferir la categoría con seguridad. Mandalo como: description amount category",
-        );
+        await reportFailure(reportOperation, "learned_lookup");
+        return ctx.reply(GENERIC_SAFE_CATEGORY_RESPONSE);
       }
+      if (learnedBudget) {
+        budgetId = learnedBudget.id;
+        inferredCategoryName = learnedBudget.name;
+      } else {
+        const budgets = await readBudgets();
+        let candidates;
+        try {
+          candidates = await categorize({ description, amount, budgets });
+        } catch {
+          await reportFailure(reportOperation, "provider_lookup");
+          return ctx.reply(GENERIC_SAFE_CATEGORY_RESPONSE);
+        }
 
-      const budget = selectBudget(budgets, inference);
-      if (!budget) {
-        return ctx.reply(
-          "No pude inferir la categoría con seguridad. Mandalo como: description amount category",
-        );
+        const candidate = selectCandidate(candidates);
+        if (!candidate) {
+          return ctx.reply(buildLowConfidenceReply({
+            originalText: ctx.message.text,
+            candidates,
+          }));
+        }
+        budgetId = candidate.budgetId;
+        inferredCategoryName = candidate.categoryName;
       }
-
-      budgetId = budget.id;
-      inferredCategoryName = budget.name;
     }
 
-    const { expenseId, totalToday } = await writeExpense({
-      description,
-      amount,
-      budgetId,
-    });
+    let expenseId;
+    let totalToday;
+    try {
+      ({ expenseId, totalToday } = await writeExpense({
+        description,
+        amount,
+        budgetId,
+      }));
+    } catch {
+      await reportFailure(reportOperation, "expense_write");
+      return ctx.reply("Something went wrong, try again.");
+    }
     const categoryLine = inferredCategoryName
       ? `\nCategoría: ${inferredCategoryName}`
       : "";
@@ -301,6 +352,7 @@ export async function handleExpenseMessage(ctx, {
   } catch (err) {
     if (
       err.message.startsWith("Format:") ||
+      err.message.startsWith("Use:") ||
       err.message.includes("is not a valid amount")
     ) {
       return ctx.reply(err.message);
@@ -311,12 +363,19 @@ export async function handleExpenseMessage(ctx, {
 
 bot.on("message:text", handleExpenseMessage);
 
-export function startBot() {
+export function startBot({
+  preflight = () => { assertRuntimeAndBackend(); assertRuntimeEnvironment(); },
+  createBot = () => {
+    const applicationBot = new Bot(process.env.TELEGRAM_TOKEN);
+    applicationBot.use(bot);
+    return applicationBot;
+  },
+} = {}) {
+  preflight();
+  const bot = createBot();
   process.once("SIGINT", () => bot.stop());
   process.once("SIGTERM", () => bot.stop());
   return bot.start();
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  startBot();
-}
+if (isDirectExecution) startBot();

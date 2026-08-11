@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  main,
   parseTelegramOwnerId,
   runNotifications,
 } from '../src/notifications.js';
@@ -42,6 +43,35 @@ function createDependencies({
   };
   return { dependencies, events, state };
 }
+
+test('notification preflight runs before bot construction, scheduling, or sending', async () => {
+  const previousToken = process.env.TELEGRAM_TOKEN;
+  const previousOwner = process.env.TELEGRAM_OWNER_ID;
+  process.env.TELEGRAM_TOKEN = 'token';
+  process.env.TELEGRAM_OWNER_ID = '42';
+  const events = [];
+  try {
+    await main({
+      preflight: () => events.push('preflight'),
+      createBot: () => { events.push('construct'); return { api: { sendMessage: () => {} } }; },
+      run: async () => events.push('schedule'),
+    });
+    assert.deepEqual(events, ['preflight', 'construct', 'schedule']);
+  } finally {
+    if (previousToken === undefined) delete process.env.TELEGRAM_TOKEN; else process.env.TELEGRAM_TOKEN = previousToken;
+    if (previousOwner === undefined) delete process.env.TELEGRAM_OWNER_ID; else process.env.TELEGRAM_OWNER_ID = previousOwner;
+  }
+});
+
+test('notification preflight failure prevents construction and scheduling', async () => {
+  const events = [];
+  await assert.rejects(main({
+    preflight: () => { events.push('preflight'); throw new Error('bad backend'); },
+    createBot: () => events.push('construct'),
+    run: async () => events.push('schedule'),
+  }), /bad backend/);
+  assert.deepEqual(events, ['preflight']);
+});
 
 test('parses a positive safe Telegram owner ID', () => {
   assert.equal(parseTelegramOwnerId('123456789'), 123456789);
