@@ -287,7 +287,7 @@ export async function handleExpenseMessage(ctx, {
         reply_markup: {
           inline_keyboard: [[
             {
-              text: "Recategorizar",
+              text: "Cambiar",
               callback_data: encodeExpenseCallback("recategorize", expenseId),
             },
             {

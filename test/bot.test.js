@@ -88,7 +88,7 @@ test('logs a Telegram expense rounded to cents with exact action buttons', async
   assert.equal(replies[0][0], 'Cargado ✓\nLlevás $12.35 hoy');
   assert.deepEqual(
     replies[0][1].reply_markup.inline_keyboard.flat().map((button) => button.text),
-    ['Recategorizar', 'Eliminar'],
+    ['Cambiar', 'Eliminar'],
   );
   assert.ok(replies[0][1].reply_markup.inline_keyboard.flat().every(
     (button) => decodeExpenseCallback(button.callback_data)?.expenseId ===
