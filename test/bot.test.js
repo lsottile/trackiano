@@ -10,6 +10,7 @@ import {
   registerCompleteSummaryHandler,
   registerExpenseActionHandlers,
   registerNewPeriodHandler,
+  registerPaydayHandler,
   startBot,
 } from '../src/bot.js';
 
@@ -91,43 +92,57 @@ test('handles only the exact summary-complete message with the verbose summary',
   assert.equal(continued, true);
 });
 
-test('/nuevo_mes is owner-only, exact, and starts an empty period', async () => {
-  const starts = [];
+test('command routing recognizes addressed payday commands and validates before generic parsing', async () => {
+  const paydayWrites = [];
+  const genericWrites = [];
   const replies = [];
   const composer = new Composer();
-  registerNewPeriodHandler(composer, {
+  registerNewPeriodHandler(composer, { ownerId: 42 });
+  registerPaydayHandler(composer, {
     ownerId: 42,
-    startAccountingPeriod: async (request) => starts.push(request),
+    collectPayday: async (entry) => {
+      paydayWrites.push(entry);
+      return { dailyBalance: 100, monthlyBalance: 70, payBalance: 100 };
+    },
   });
+  composer.on('message:text', (ctx) => handleExpenseMessage(ctx, {
+    createFinancialEntryAndGetBalances: async (entry) => genericWrites.push(entry),
+  }));
 
-  await composer.middleware()({
-    update: { update_id: 987, message: { message_id: 12, text: '/nuevo_mes', from: { id: 42 } } },
-    message: { message_id: 12, text: '/nuevo_mes' },
-    from: { id: 42 },
-    match: '',
+  const send = (text, id = 42, updateId = 987) => composer.middleware()({
+    update: {
+      update_id: updateId,
+      message: {
+        text,
+        entities: [{ type: 'bot_command', offset: 0, length: text.split(/\s/, 1)[0].length }],
+      },
+    },
+    message: {
+      text,
+      entities: [{ type: 'bot_command', offset: 0, length: text.split(/\s/, 1)[0].length }],
+    },
+    from: { id },
+    me: { username: 'BotUsername' },
     reply: async (message) => replies.push(message),
-  }, () => assert.fail('exact owner command must short-circuit'));
+  }, () => assert.fail(`command-like text must short-circuit: ${text}`));
 
-  assert.deepEqual(starts, [{ requestKey: 'telegram-update:987' }]);
-  assert.deepEqual(replies, ['Nuevo período iniciado con saldo $0.']);
+  await send('/nuevo_mes');
+  await send('/nuevo_mes@BotUsername');
+  for (const text of ['/cobre', '/cobre@BotUsername 0 salary', '/cobre 10']) await send(text);
+  await send('/cobre 75 wage', 42, 988);
+  await send('/cobre@BotUsername 100.005 salary', 42, 989);
+  await send('/cobre 50 salary', 7);
+  await send('/unknown 25 coffee');
 
-  for (const { text, ownerId } of [
-    { text: 'nuevo_mes', ownerId: 42 },
-    { text: '/nuevo_mes extra', ownerId: 42 },
-    { text: '/nuevo_mes', ownerId: 7 },
-  ]) {
-    let continued = false;
-    await composer.middleware()({
-      update: { message: { text, from: { id: ownerId } } },
-      message: { text },
-      from: { id: ownerId },
-      match: text === '/nuevo_mes extra' ? 'extra' : '',
-      reply: async (message) => replies.push(message),
-    }, () => { continued = true; });
-    assert.equal(continued, text !== '/nuevo_mes');
-  }
-  assert.deepEqual(starts, [{ requestKey: 'telegram-update:987' }]);
-  assert.equal(replies.at(-1), 'Unauthorized');
+  assert.deepEqual(paydayWrites, [
+    { requestKey: 'telegram-update:988', amount: 75, description: 'wage' },
+    { requestKey: 'telegram-update:989', amount: 100.01, description: 'salary' },
+  ]);
+  assert.deepEqual(genericWrites, []);
+  assert.ok(replies.includes('Usá /cobre <monto> <detalle> para registrar el cobro.'));
+  assert.ok(replies.includes('Saldo diario: $100.00\nSaldo del mes: $70.00\nSaldo desde cobro: $100.00'));
+  assert.ok(replies.includes('Unauthorized'));
+  assert.equal(replies.at(-1), 'Unknown command.');
 });
 
 test('logs a Telegram expense rounded to cents with exact action buttons', async () => {
@@ -143,13 +158,14 @@ test('logs a Telegram expense rounded to cents with exact action buttons', async
       return {
         expenseId: '22222222-2222-2222-2222-222222222222',
         dailyBalance: -12.35,
-        periodBalance: -42.35,
+        monthlyBalance: -52.35,
+        payBalance: -42.35,
       };
     },
   });
 
   assert.equal(writes[0].amount, 10.01);
-  assert.equal(replies[0][0], 'Saldo diario: $-12.35\nSaldo del período: $-42.35');
+  assert.equal(replies[0][0], 'Saldo diario: $-12.35\nSaldo del mes: $-52.35\nSaldo desde cobro: $-42.35');
   assert.deepEqual(
     replies[0][1].reply_markup.inline_keyboard.flat().map((button) => button.text),
     ['Cambiar', 'Eliminar'],
@@ -183,13 +199,14 @@ test('accepts the half-cent income boundary and stores one cent', async () => {
   }, {
     createFinancialEntryAndGetBalances: async (entry) => {
       writes.push(entry);
-      return { expenseId: '22222222-2222-2222-2222-222222222222', dailyBalance: 0.01, periodBalance: 0.01 };
+      return { expenseId: '22222222-2222-2222-2222-222222222222', dailyBalance: 0.01, monthlyBalance: 0.01, payBalance: 0.01 };
     },
   });
 
   assert.equal(writes[0].amount, 0.01);
   assert.equal(writes[0].type, 'income');
 });
+
 
 test('logs income without category lookup or correction and keeps deletion available', async () => {
   const calls = [];
@@ -207,7 +224,8 @@ test('logs income without category lookup or correction and keeps deletion avail
       return {
         expenseId: '22222222-2222-2222-2222-222222222222',
         dailyBalance: 1400,
-        periodBalance: 1400,
+        monthlyBalance: 1400,
+        payBalance: 1400,
       };
     },
   });
@@ -215,7 +233,7 @@ test('logs income without category lookup or correction and keeps deletion avail
   assert.deepEqual(calls, [{
     description: 'saldo anterior', amount: 1400, budgetId: null, type: 'income',
   }]);
-  assert.equal(replies[0][0], 'Saldo diario: $1400.00\nSaldo del período: $1400.00');
+  assert.equal(replies[0][0], 'Saldo diario: $1400.00\nSaldo del mes: $1400.00\nSaldo desde cobro: $1400.00');
   assert.deepEqual(
     replies[0][1].reply_markup.inline_keyboard.flat().map(({ text }) => text),
     ['Eliminar'],
@@ -262,7 +280,7 @@ test('returns safe delimiter guidance for ambiguous numeric category suffixes', 
     message: { text: 'snack 5 Category 2' },
     reply: async (message) => replies.push(message),
   });
-  assert.deepEqual(replies, ['Use: {description} {amount} | {category}']);
+  assert.deepEqual(replies, ['Use: {amount} {description} | {category}']);
 });
 
 test('explicit category skips learned lookup and provider inference', async () => {
@@ -273,7 +291,7 @@ test('explicit category skips learned lookup and provider inference', async () =
     inferCategory: async () => calls.push('provider'),
     createFinancialEntryAndGetBalances: async (expense) => {
       calls.push(`write:${expense.budgetId}`);
-      return { expenseId: '11111111-1111-1111-1111-111111111111', dailyBalance: -50, periodBalance: -50 };
+      return { expenseId: '11111111-1111-1111-1111-111111111111', dailyBalance: -50, monthlyBalance: -50, payBalance: -50 };
     },
   });
   assert.deepEqual(calls, ['explicit:Travel and Lodging', 'write:travel-id']);
@@ -288,12 +306,12 @@ test('learned hit skips provider and uses the shared success reply', async () =>
     inferCategory: async () => { calls.push('provider'); return []; },
     createFinancialEntryAndGetBalances: async (expense) => {
       calls.push(`write:${expense.budgetId}`);
-      return { expenseId: '11111111-1111-1111-1111-111111111111', dailyBalance: -10, periodBalance: -10 };
+      return { expenseId: '11111111-1111-1111-1111-111111111111', dailyBalance: -10, monthlyBalance: -10, payBalance: -10 };
     },
   });
   assert.equal(calls[0], 'learned:c798e5b18ed876efb8a937d27a0c48de53e3735e490e2116701901e369d8b7d9');
   assert.deepEqual(calls.slice(1), ['write:food-id']);
-  assert.equal(replies[0][0], 'Saldo diario: $-10.00\nSaldo del período: $-10.00');
+  assert.equal(replies[0][0], 'Saldo diario: $-10.00\nSaldo del mes: $-10.00\nSaldo desde cobro: $-10.00');
 });
 
 test('learned miss falls through to one ranked provider call and writes the top accepted ID', async () => {
@@ -304,7 +322,7 @@ test('learned miss falls through to one ranked provider call and writes the top 
     inferCategory: async () => { calls.push('provider'); return [{ budgetId: 'transport-id', categoryName: 'Transport', confidence: 0.7, reason: 'hidden' }]; },
     createFinancialEntryAndGetBalances: async (expense) => {
       calls.push(`write:${expense.budgetId}`);
-      return { expenseId: '11111111-1111-1111-1111-111111111111', dailyBalance: -20, periodBalance: -20 };
+      return { expenseId: '11111111-1111-1111-1111-111111111111', dailyBalance: -20, monthlyBalance: -20, payBalance: -20 };
     },
   });
   assert.deepEqual(calls, ['learned', 'budgets', 'provider', 'write:transport-id']);

@@ -1,10 +1,26 @@
+import { createHash } from 'node:crypto';
+
 import { createDatabase } from './db.js';
 import { roundMoney } from './money.js';
 import { formatDateInTimeZone } from './periods.js';
 import { fingerprintDescription } from './descriptionFingerprint.js';
 
+const TRANSACTION_STATEMENT_TIMEOUT_SQL = "SET LOCAL statement_timeout = '5s'";
+const TRANSACTION_LOCK_TIMEOUT_SQL = "SET LOCAL lock_timeout = '1s'";
+
 function money(value) {
   return roundMoney(Number(value));
+}
+
+export function derivePaydayExpenseId(userId, requestKey) {
+  const bytes = createHash('sha256')
+    .update(`trackiano:payday-income:${userId}:${requestKey}`)
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function monthlyRange(now, timeZone) {
@@ -78,7 +94,13 @@ export function createPostgresRepository(database, {
     return result.rows[0]?.id ?? '';
   }
 
+  async function setTransactionTimeouts(executor) {
+    await executor.query(TRANSACTION_STATEMENT_TIMEOUT_SQL);
+    await executor.query(TRANSACTION_LOCK_TIMEOUT_SQL);
+  }
+
   async function lockFinancialTimeline(executor, userId) {
+    await setTransactionTimeouts(executor);
     await executor.query(
       'SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))',
       [userId],
@@ -103,29 +125,30 @@ export function createPostgresRepository(database, {
     const today = formatDateInTimeZone(now, timeZone);
     const result = await executor.query(
       `WITH latest_period AS (
-         SELECT started_at
-         FROM accounting_periods
+         SELECT started_at FROM accounting_periods
          WHERE user_id = $1
-         ORDER BY started_at DESC, id DESC
-         LIMIT 1
+         ORDER BY started_at DESC, id DESC LIMIT 1
+       ), boundaries AS (
+         SELECT (date_trunc('month', $3 AT TIME ZONE $4) AT TIME ZONE $4) AS month_start
        )
        SELECT
-         -- expense_date is the local calendar day; created_at is the ordered instant
-         -- used for membership in an accounting period.
          COALESCE(SUM(CASE WHEN e.entry_type = 'income' THEN e.amount ELSE -e.amount END)
            FILTER (WHERE e.expense_date = $2), 0) AS daily_balance,
          COALESCE(SUM(CASE WHEN e.entry_type = 'income' THEN e.amount ELSE -e.amount END)
-           FILTER (WHERE p.started_at IS NULL OR e.created_at >= p.started_at), 0)
-           AS period_balance
-       FROM (SELECT 1) AS seed
+           FILTER (WHERE e.created_at >= b.month_start AND e.created_at <= $3), 0) AS monthly_balance,
+         COALESCE(SUM(CASE WHEN e.entry_type = 'income' THEN e.amount ELSE -e.amount END)
+           FILTER (WHERE e.created_at >= COALESCE(p.started_at, b.month_start)
+             AND e.created_at <= $3), 0) AS pay_balance
+       FROM boundaries AS b
        LEFT JOIN latest_period AS p ON true
-       LEFT JOIN expenses AS e
-         ON e.user_id = $1 AND e.deleted_at IS NULL`,
-      [userId, today],
+       LEFT JOIN expenses AS e ON e.user_id = $1 AND e.deleted_at IS NULL
+       GROUP BY b.month_start, p.started_at`,
+      [userId, today, now, timeZone],
     );
     return {
       dailyBalance: money(result.rows[0]?.daily_balance ?? 0),
-      periodBalance: money(result.rows[0]?.period_balance ?? 0),
+      monthlyBalance: money(result.rows[0]?.monthly_balance ?? 0),
+      payBalance: money(result.rows[0]?.pay_balance ?? 0),
     };
   }
 
@@ -181,8 +204,7 @@ export function createPostgresRepository(database, {
     async recategorizeExpenseAndLearn(expenseId, budgetId) {
       const userId = await getUserId();
       return database.transaction(async (transaction) => {
-        await transaction.query("SET LOCAL statement_timeout = '5s'");
-        await transaction.query("SET LOCAL lock_timeout = '1s'");
+        await setTransactionTimeouts(transaction);
         const locked = await transaction.query(
           `SELECT e.description
            FROM expenses AS e
@@ -364,29 +386,50 @@ export function createPostgresRepository(database, {
       });
     },
 
-    async startAccountingPeriod({ requestKey } = {}) {
+    async createPaydayAndGetBalances({ requestKey, amount, description } = {}) {
       if (typeof requestKey !== 'string' || !requestKey.trim()) {
-        throw new Error('Accounting period request key is required.');
+        throw new Error('Payday request key is required.');
+      }
+      if (!Number.isFinite(amount) || roundMoney(amount) <= 0) {
+        throw new Error('Payday amount must be positive.');
+      }
+      if (typeof description !== 'string' || !description.trim()) {
+        throw new Error('Payday description is required.');
       }
       const userId = await getUserId();
+      const expenseId = derivePaydayExpenseId(userId, requestKey);
       return database.transaction(async (transaction) => {
-        const startedAt = await lockFinancialTimeline(transaction, userId);
+        const databaseNow = await lockFinancialTimeline(transaction, userId);
         const inserted = await transaction.query(
           `INSERT INTO accounting_periods
              (user_id, request_key, started_at, created_at)
            VALUES ($1, $2, $3, $3)
            ON CONFLICT (user_id, request_key) DO NOTHING
-           RETURNING id`,
-          [userId, requestKey, startedAt],
+           RETURNING id, started_at`,
+          [userId, requestKey, databaseNow],
         );
-        if (inserted.rows[0]?.id) return inserted.rows[0].id;
-        const existing = await transaction.query(
-          `SELECT id
-           FROM accounting_periods
+        const period = inserted.rows[0] ?? (await transaction.query(
+          `SELECT id, started_at FROM accounting_periods
            WHERE user_id = $1 AND request_key = $2`,
-          [userId, requestKey],
+          [userId, requestKey])).rows[0];
+        if (!period) throw new Error('Payday period was not persisted.');
+        await transaction.query(
+          `INSERT INTO expenses
+             (id, user_id, budget_id, description, amount, expense_date, entry_type,
+              created_at, updated_at)
+           VALUES ($1, $2, NULL, $3, $4, $5, 'income', $6, $7)
+           ON CONFLICT (id) DO NOTHING
+           RETURNING id`,
+          [expenseId, userId, description.trim(), roundMoney(amount),
+            formatDateInTimeZone(period.started_at, timeZone), period.started_at, period.started_at],
         );
-        return existing.rows[0]?.id ?? '';
+        const persisted = await transaction.query(
+          `SELECT id FROM expenses
+           WHERE id = $1 AND user_id = $2 AND entry_type = 'income'`,
+          [expenseId, userId],
+        );
+        if (persisted.rowCount !== 1) throw new Error('Payday income was not persisted.');
+        return { expenseId, ...await balancesWith(transaction, userId, databaseNow) };
       });
     },
 

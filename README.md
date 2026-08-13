@@ -4,14 +4,14 @@ Telegram expense bot running on Node.js 22 with PostgreSQL storage. `src/notion.
 
 ## Usage
 
-Send a message with the format:
+Send amount first (preferred), or use the compatible description-first forms:
 ```
-{description} {amount}
-{description} {amount} {category}
-{description} {amount} | {category}
+{amount} {description}
+{description} {amount} [category]
+{amount} {description} | {category}
 ```
-Examples: `coffee 50`, `hotel 50 Travel and Lodging`, `snack 5 | Category 2`.
-Prefix or suffix an amount with an explicit plus to record manual income, for example `+1400 opening balance` or `opening balance +1400`. Income is uncategorized. Use `/nuevo_mes` to open a new accounting period with a zero period balance, then add prior savings explicitly as income if desired. The daily balance still includes every entry from the current local calendar day, including entries created before `/nuevo_mes`. Until the first `/nuevo_mes`, the active period has an open baseline and includes all existing non-deleted history. Amounts use finite decimal syntax only; comma decimals, hexadecimal, binary, and exponent forms are rejected. Use the literal `|` delimiter for numeric-suffixed categories or whenever an explicit boundary is clearer. Ambiguous undelimited numeric suffixes fail closed.
+Examples: `50 coffee`, `hotel 50 Travel and Lodging`, `5 snack | Category 2`.
+Use `/cobre <positive amount> <description>` for payday: it atomically starts a pay cycle and records uncategorized income. Prefix the amount with `+` for other manual income, for example `+1400 salary`; `salary +1400` remains supported. `/nuevo_mes` is a storage-free compatibility guide. The calendar-month balance always starts on the first day of the current `APP_TIMEZONE` month; the pay balance starts at the latest `/cobre` boundary, or that month start before the first boundary. Daily balance remains the current local calendar day. Amounts use finite decimal syntax only; ambiguous numeric forms fail closed, and `|` gives an explicit category boundary.
 
 When category is omitted, the bot normalizes the current description with NFKC, trims/collapses whitespace, lowercases it, and hashes it with SHA-256. A same-user learned correction is checked locally first. Fingerprints are pseudonymous and are never logged or sent as history. On a miss, one OpenRouter request uses current description/amount, the current PostgreSQL category allowlist, and static bilingual guidance, with an 8-second maximum and no retry. Low-confidence results write nothing and return complete resend examples only when the reply is at most 4,096 JavaScript UTF-16 units; otherwise they use a generic safe response.
 
@@ -19,7 +19,7 @@ When category is omitted, the bot normalizes the current description with NFKC, 
 
 **Queries**
 - `/budget <category>` — daily allowance based on remaining balance and days until payday
-- `/budget <category> detail` — list all expenses for the current pay period
+- `/budget <category> detail` — list expenses for the configured `PAY_DATE_DAY` period
 - `/balance <category>` — remaining balance for a category
 - `/summary` — monthly expenses by category
 - `/summary-complete` — monthly summary with the two largest expenses in each category
@@ -28,7 +28,8 @@ When category is omitted, the bot normalizes the current description with NFKC, 
 - `/categories` — list all available categories
 
 **Management**
-- `/nuevo_mes` — open a new accounting period with a zero balance
+- `/cobre <amount> <description>` — record payday income and start a new pay cycle
+- `/nuevo_mes` — show `/cobre` compatibility guidance without changing storage
 - `/new <name> <amount>` — create a new budget category
 - `/help` — show all available commands
 
@@ -117,7 +118,16 @@ entries are retained with a soft-delete timestamp. Migration `004_income_entries
 keeps existing/imported rows as expenses and allows uncategorized manual income.
 Migration `005_accounting_periods.sql` stores immutable owner-scoped period boundaries and idempotent Telegram request keys.
 
-Deploy migration-first: apply versioned schema migrations only after configuring an approved database and confirming backup/rollback readiness and migration-runner exclusivity. Migration `003_category_inference_rules.sql` is additive, performs no backfill, and retains learned rules independently of source expenses. Normal `npm test` skips the opt-in PostgreSQL integration scenario; `npm run test:postgres` fails unless `TEST_DATABASE_URL` is explicitly set.
+The `Saldo desde cobro` balance uses timestamps only. The latest owner-scoped boundary is selected by
+`started_at DESC, id DESC`, and that balance includes active entries whose
+`created_at` is at or after that boundary. Before the first boundary, it falls back to
+the current calendar month's start in `APP_TIMEZONE`. Calendar-month balances use the
+same timezone-aware month boundary. `/cobre` obtains one database timestamp for both
+the boundary and opening income; retries derive the income UUID deterministically from
+the owner and Telegram request identity, so they return the same row without timestamp
+identity guessing. Different updates create distinct periods and incomes.
+
+Apply versioned schema migrations only after configuring an approved database and confirming backup/rollback readiness and migration-runner exclusivity. Migration `003_category_inference_rules.sql` is additive, performs no backfill, and retains learned rules independently of source expenses. Normal `npm test` skips the opt-in PostgreSQL integration scenario; `npm run test:postgres` fails unless `TEST_DATABASE_URL` is explicitly set.
 
 ```bash
 DATABASE_URL=postgres://... PGSSLMODE=require \
@@ -142,7 +152,12 @@ Recommended cutover:
 5. Require a matching reconciliation report before setting `STORAGE_BACKEND=postgres`.
 6. Restart one bot and one notification worker and observe them before resuming normal use.
 
-For this feature, emergency rollback means redeploying the exact pre-feature image/commit. Do not select Notion in the new image, rewrite expenses or categories, or run a reverse migration. Leave `category_inference_rules` and its learned data intact; a later removal requires proving that no deployed version reads or writes it. Production migration, cutover, and rollback are separate operator-confirmed remote actions.
+For emergency application rollback, redeploy the exact previous image/commit. Migrations
+`004_income_entries.sql` and `005_accounting_periods.sql` are additive and may remain in
+place while rolling application code forward again; do not rewrite financial rows or run
+an unvalidated reverse migration. Leave `category_inference_rules` and its learned data
+intact. Production migration, cutover, and rollback remain separate operator-confirmed
+actions.
 
 The importer refuses to overwrite a non-empty divergent PostgreSQL target. An identical
 retry is a no-op; changed source or target data requires explicit operator resolution.

@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createDatabase } from '../src/db.js';
-import { createPostgresRepository } from '../src/postgres.js';
+import {
+  createPostgresRepository,
+  derivePaydayExpenseId,
+} from '../src/postgres.js';
 
 const userId = '11111111-1111-1111-1111-111111111111';
 const budgetId = '22222222-2222-2222-2222-222222222222';
@@ -51,7 +54,9 @@ test('returns only owner-scoped budgets and maps numeric money values', async ()
 test('creates a cent-rounded expense on the app-local calendar date', async () => {
   const database = fakeDatabase((sql, params) => {
     if (sql.startsWith('INSERT INTO expenses')) {
-      assert.deepEqual(params, [userId, budgetId, 'Coffee', 10.01, '2026-07-19', 'expense']);
+      assert.deepEqual(params, [
+        userId, budgetId, 'Coffee', 10.01, '2026-07-19', 'expense',
+      ]);
       return { rows: [{ id: expenseId }], rowCount: 1 };
     }
   });
@@ -68,13 +73,22 @@ test('creates a cent-rounded expense on the app-local calendar date', async () =
   }), expenseId);
 });
 
-test('locks the owner before using one database wall clock for entry membership', async () => {
+test('derives stable, distinct, owner-scoped valid UUIDs for payday income', () => {
+  const first = derivePaydayExpenseId(userId, 'telegram-update:987');
+  assert.equal(first, derivePaydayExpenseId(userId, 'telegram-update:987'));
+  assert.notEqual(first, derivePaydayExpenseId(userId, 'telegram-update:988'));
+  assert.notEqual(first, derivePaydayExpenseId('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'telegram-update:987'));
+  assert.match(first, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+});
+
+test('locks the owner, obtains one database timestamp, and calculates timestamp balances', async () => {
   const occurredAt = new Date('2026-08-02T05:30:00.000Z');
   const database = fakeDatabase((sql, params) => {
     if (sql.startsWith('SELECT clock_timestamp()')) {
       return { rows: [{ occurred_at: occurredAt }], rowCount: 1 };
     }
     if (sql.startsWith('INSERT INTO expenses')) {
+      assert.doesNotMatch(sql, /accounting_period_id/);
       assert.deepEqual(params, [
         userId, null, 'Opening balance', 100.01, '2026-08-01', 'income',
         occurredAt, occurredAt,
@@ -82,13 +96,12 @@ test('locks the owner before using one database wall clock for entry membership'
       return { rows: [{ id: expenseId }], rowCount: 1 };
     }
     if (sql.includes('AS daily_balance')) {
-      assert.match(sql, /entry_type = 'income' THEN e\.amount ELSE -e\.amount/);
-      assert.match(sql, /WHERE user_id = \$1[\s\S]*ORDER BY started_at DESC, id DESC[\s\S]*LIMIT 1/);
-      assert.match(sql, /expense_date = \$2/);
-      assert.match(sql, /started_at IS NULL OR e\.created_at >=/);
+      assert.match(sql, /ORDER BY started_at DESC, id DESC/);
+      assert.match(sql, /e\.created_at >= COALESCE\(p\.started_at, b\.month_start\)/);
+      assert.match(sql, /date_trunc\('month', \$3 AT TIME ZONE \$4\)[\s\S]*AT TIME ZONE \$4/);
       assert.match(sql, /e\.deleted_at IS NULL/);
-      assert.deepEqual(params, [userId, '2026-08-01']);
-      return { rows: [{ daily_balance: '90.00', period_balance: '80.00' }] };
+      assert.deepEqual(params, [userId, '2026-08-01', occurredAt, 'America/Guatemala']);
+      return { rows: [{ daily_balance: '90.00', monthly_balance: '70.00', pay_balance: '80.00' }] };
     }
   });
   const repository = createPostgresRepository(database, {
@@ -97,75 +110,112 @@ test('locks the owner before using one database wall clock for entry membership'
 
   assert.deepEqual(await repository.createFinancialEntryAndGetBalances({
     description: 'Opening balance', amount: 100.005, budgetId: null, type: 'income',
-  }), { expenseId, dailyBalance: 90, periodBalance: 80 });
+  }), { expenseId, dailyBalance: 90, monthlyBalance: 70, payBalance: 80 });
   const transactionCalls = database.calls.slice(
     database.calls.findIndex(({ sql }) => sql === 'TRANSACTION') + 1,
   );
-  assert.match(transactionCalls[0].sql, /pg_advisory_xact_lock/);
-  assert.deepEqual(transactionCalls[0].params, [userId]);
-  assert.match(transactionCalls[1].sql, /^SELECT clock_timestamp\(\)/);
-  assert.match(transactionCalls[2].sql, /^INSERT INTO expenses/);
+  assert.equal(transactionCalls[0].sql, "SET LOCAL statement_timeout = '5s'");
+  assert.equal(transactionCalls[1].sql, "SET LOCAL lock_timeout = '1s'");
+  assert.match(transactionCalls[2].sql, /pg_advisory_xact_lock/);
+  assert.match(transactionCalls[3].sql, /^SELECT clock_timestamp\(\)/);
+  assert.match(transactionCalls[4].sql, /^INSERT INTO expenses/);
+  assert.equal(transactionCalls.filter(({ sql }) => sql.includes('clock_timestamp')).length, 1);
 });
 
-test('opens idempotent owner periods after the same advisory lock and database clock', async () => {
+test('payday writes period then deterministic income at the same timestamp and is retry-safe', async () => {
   const startedAt = new Date('2026-08-08T14:30:00.000Z');
   const periodId = '44444444-4444-4444-4444-444444444444';
-  let inserts = 0;
+  const deterministicId = derivePaydayExpenseId(userId, 'telegram-update:987');
   const database = fakeDatabase((sql, params) => {
-    if (sql.startsWith('SELECT clock_timestamp()')) {
-      return { rows: [{ occurred_at: startedAt }], rowCount: 1 };
-    }
+    if (sql.startsWith('SELECT clock_timestamp()')) return { rows: [{ occurred_at: startedAt }], rowCount: 1 };
     if (sql.startsWith('INSERT INTO accounting_periods')) {
-      inserts += 1;
-      assert.match(sql, /ON CONFLICT \(user_id, request_key\) DO NOTHING/);
       assert.deepEqual(params, [userId, 'telegram-update:987', startedAt]);
-      return inserts === 1
-        ? { rows: [{ id: periodId }], rowCount: 1 }
-        : { rows: [], rowCount: 0 };
+      return { rows: [{ id: periodId, started_at: startedAt }], rowCount: 1 };
     }
-    if (sql.includes('FROM accounting_periods') && sql.includes('request_key')) {
-      assert.deepEqual(params, [userId, 'telegram-update:987']);
-      return { rows: [{ id: periodId }], rowCount: 1 };
+    if (sql.startsWith('INSERT INTO expenses')) {
+      assert.match(sql, /ON CONFLICT \(id\) DO NOTHING/);
+      assert.deepEqual(params, [deterministicId, userId, 'Salary', 100, '2026-08-08', startedAt, startedAt]);
+      return { rows: [{ id: deterministicId }], rowCount: 1 };
     }
-    if (/INSERT INTO (expenses|budgets)/.test(sql)) assert.fail(`synthetic write: ${sql}`);
-  });
-  const repository = createPostgresRepository(database, { telegramUserId: 42 });
-
-  assert.equal(await repository.startAccountingPeriod({
-    requestKey: 'telegram-update:987',
-  }), periodId);
-  assert.equal(await repository.startAccountingPeriod({
-    requestKey: 'telegram-update:987',
-  }), periodId);
-  for (const transactionIndex of database.calls
-    .map(({ sql }, index) => sql === 'TRANSACTION' ? index : -1)
-    .filter((index) => index >= 0)) {
-    assert.match(database.calls[transactionIndex + 1].sql, /pg_advisory_xact_lock/);
-    assert.match(database.calls[transactionIndex + 2].sql, /^SELECT clock_timestamp\(\)/);
-    assert.match(database.calls[transactionIndex + 3].sql, /^INSERT INTO accounting_periods/);
-  }
-  assert.equal(database.calls.some(({ sql }) => sql.startsWith('UPDATE expenses')), false);
-});
-
-test('active-period balance uses an open baseline when no owner marker exists', async () => {
-  const database = fakeDatabase((sql) => {
-    if (sql.startsWith('SELECT clock_timestamp()')) {
-      return { rows: [{ occurred_at: new Date('2026-08-08T12:00:00Z') }], rowCount: 1 };
+    if (sql.startsWith('SELECT id FROM expenses')) {
+      return { rows: [{ id: deterministicId }], rowCount: 1 };
     }
     if (sql.includes('AS daily_balance')) {
-      assert.match(sql, /latest_period[\s\S]*LEFT JOIN/);
-      assert.match(sql, /started_at IS NULL OR/);
-      return { rows: [{ daily_balance: '-5.00', period_balance: '125.00' }] };
+      return { rows: [{ daily_balance: '100', monthly_balance: '100', pay_balance: '100' }] };
     }
   });
   const repository = createPostgresRepository(database, { telegramUserId: 42 });
 
-  assert.deepEqual(
-    await repository.createFinancialEntryAndGetBalances({
-      description: 'Coffee', amount: 5, budgetId,
-    }),
-    { expenseId: '', dailyBalance: -5, periodBalance: 125 },
-  );
+  const result = await repository.createPaydayAndGetBalances({
+    requestKey: 'telegram-update:987', amount: 100, description: 'Salary',
+  });
+  assert.equal(result.expenseId, deterministicId);
+
+  const transactionCalls = database.calls.slice(database.calls.findIndex(({ sql }) => sql === 'TRANSACTION') + 1);
+  assert.equal(transactionCalls[0].sql, "SET LOCAL statement_timeout = '5s'");
+  assert.equal(transactionCalls[1].sql, "SET LOCAL lock_timeout = '1s'");
+  assert.match(transactionCalls[2].sql, /pg_advisory_xact_lock/);
+  assert.match(transactionCalls[3].sql, /^SELECT clock_timestamp\(\)/);
+  assert.match(transactionCalls[4].sql, /^INSERT INTO accounting_periods/);
+  assert.match(transactionCalls[5].sql, /^INSERT INTO expenses/);
+  assert.equal(transactionCalls.filter(({ sql }) => sql.includes('clock_timestamp')).length, 1);
+});
+
+test('payday validates amount and description before storage', async () => {
+  const database = fakeDatabase();
+  const repository = createPostgresRepository(database, { telegramUserId: 42 });
+  for (const input of [
+    { requestKey: 'telegram-update:1', amount: 0, description: 'Salary' },
+    { requestKey: 'telegram-update:1', amount: 1, description: '   ' },
+  ]) await assert.rejects(repository.createPaydayAndGetBalances(input));
+  assert.equal(database.calls.length, 0);
+});
+
+test('financial lock errors propagate and roll back without retries', async () => {
+  for (const method of ['entry', 'payday']) {
+    const events = [];
+    const lockError = new Error(`${method} lock failed`);
+    const client = {
+      async query(sql) {
+        events.push(sql);
+        if (sql.includes('pg_advisory_xact_lock')) throw lockError;
+        return { rows: [], rowCount: 0 };
+      },
+      release() { events.push('release'); },
+    };
+    const pool = {
+      on() {},
+      async query() { return { rows: [{ id: userId }], rowCount: 1 }; },
+      async connect() { events.push('connect'); return client; },
+    };
+    const repository = createPostgresRepository(createDatabase({ pool }), { telegramUserId: 42 });
+    const operation = method === 'entry'
+      ? repository.createFinancialEntryAndGetBalances({
+        description: 'Coffee', amount: 5, budgetId,
+      })
+      : repository.createPaydayAndGetBalances({
+        requestKey: 'telegram-update:987', amount: 100, description: 'Salary',
+      });
+
+    await assert.rejects(operation, (error) => error === lockError);
+    assert.deepEqual(events, [
+      'connect',
+      'BEGIN',
+      "SET LOCAL statement_timeout = '5s'",
+      "SET LOCAL lock_timeout = '1s'",
+      'SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))',
+      'ROLLBACK',
+      'release',
+    ]);
+  }
+});
+
+test('payday retry uses only its deterministic expense identity and never guesses by timestamp', async () => {
+  const source = await import('node:fs/promises').then(({ readFile }) => readFile(
+    new URL('../src/postgres.js', import.meta.url), 'utf8'));
+  assert.doesNotMatch(source, /ordinal|accounting_period_id|income_expense_id/);
+  assert.doesNotMatch(source, /created_at = \$2[\s\S]*entry_type = 'income'/);
+  assert.match(source, /WHERE id = \$1 AND user_id = \$2/);
 });
 
 test('changes or soft-deletes only the owners exact expense', async () => {

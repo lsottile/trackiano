@@ -1,8 +1,8 @@
 import { roundMoney } from './money.js';
 
-const FORMAT_ERROR = 'Format: {description} {amount} [category]';
+const FORMAT_ERROR = 'Format: {amount} {description} or {description} {amount} [category]';
 const INCOME_AMOUNT_ERROR = 'Income amount must round to at least $0.01.';
-const DELIMITED_FORMAT = 'Use: {description} {amount} | {category}';
+const DELIMITED_FORMAT = 'Use: {amount} {description} | {category}';
 const DECIMAL = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/;
 
 function isFiniteDecimal(token) {
@@ -38,6 +38,19 @@ export function parseMessage(text) {
     };
   }
 
+  const decimalCount = tokens.filter(isFiniteDecimal).length;
+  if (isFiniteDecimal(tokens[0])) {
+    if (decimalCount > 1) throw new Error(DELIMITED_FORMAT);
+    const description = tokens.slice(1).join(' ');
+    if (!description) throw new Error(FORMAT_ERROR);
+    if (parts.length === 2) {
+      const category = parts[1].trim();
+      if (!category) throw new Error(DELIMITED_FORMAT);
+      return { description, amount: Number(tokens[0]), category };
+    }
+    return { description, amount: Number(tokens[0]), category: null };
+  }
+
   let amountTokenIndex = -1;
   for (let index = tokens.length - 1; index >= 0; index -= 1) {
     if (isFiniteDecimal(tokens[index])) {
@@ -60,7 +73,7 @@ export function parseMessage(text) {
     return { description, amount: Number(tokens[amountTokenIndex]), category };
   }
 
-  if (tokens.filter(isFiniteDecimal).length > 1) {
+  if (decimalCount > 1) {
     throw new Error(DELIMITED_FORMAT);
   }
 
