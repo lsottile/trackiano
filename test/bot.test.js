@@ -9,6 +9,7 @@ import {
   handleExpenseMessage,
   registerCompleteSummaryHandler,
   registerExpenseActionHandlers,
+  registerNewPeriodHandler,
   startBot,
 } from '../src/bot.js';
 
@@ -90,6 +91,45 @@ test('handles only the exact summary-complete message with the verbose summary',
   assert.equal(continued, true);
 });
 
+test('/nuevo_mes is owner-only, exact, and starts an empty period', async () => {
+  const starts = [];
+  const replies = [];
+  const composer = new Composer();
+  registerNewPeriodHandler(composer, {
+    ownerId: 42,
+    startAccountingPeriod: async (request) => starts.push(request),
+  });
+
+  await composer.middleware()({
+    update: { update_id: 987, message: { message_id: 12, text: '/nuevo_mes', from: { id: 42 } } },
+    message: { message_id: 12, text: '/nuevo_mes' },
+    from: { id: 42 },
+    match: '',
+    reply: async (message) => replies.push(message),
+  }, () => assert.fail('exact owner command must short-circuit'));
+
+  assert.deepEqual(starts, [{ requestKey: 'telegram-update:987' }]);
+  assert.deepEqual(replies, ['Nuevo período iniciado con saldo $0.']);
+
+  for (const { text, ownerId } of [
+    { text: 'nuevo_mes', ownerId: 42 },
+    { text: '/nuevo_mes extra', ownerId: 42 },
+    { text: '/nuevo_mes', ownerId: 7 },
+  ]) {
+    let continued = false;
+    await composer.middleware()({
+      update: { message: { text, from: { id: ownerId } } },
+      message: { text },
+      from: { id: ownerId },
+      match: text === '/nuevo_mes extra' ? 'extra' : '',
+      reply: async (message) => replies.push(message),
+    }, () => { continued = true; });
+    assert.equal(continued, text !== '/nuevo_mes');
+  }
+  assert.deepEqual(starts, [{ requestKey: 'telegram-update:987' }]);
+  assert.equal(replies.at(-1), 'Unauthorized');
+});
+
 test('logs a Telegram expense rounded to cents with exact action buttons', async () => {
   const replies = [];
   const writes = [];
@@ -98,17 +138,18 @@ test('logs a Telegram expense rounded to cents with exact action buttons', async
     reply: async (...args) => replies.push(args),
   }, {
     findBudgetId: async () => '11111111-1111-1111-1111-111111111111',
-    createExpenseAndGetTotalToday: async (expense) => {
+    createFinancialEntryAndGetBalances: async (expense) => {
       writes.push(expense);
       return {
         expenseId: '22222222-2222-2222-2222-222222222222',
-        totalToday: 12.345,
+        dailyBalance: -12.35,
+        periodBalance: -42.35,
       };
     },
   });
 
   assert.equal(writes[0].amount, 10.01);
-  assert.equal(replies[0][0], 'Cargado ✓\nLlevás $12.35 hoy');
+  assert.equal(replies[0][0], 'Saldo diario: $-12.35\nSaldo del período: $-42.35');
   assert.deepEqual(
     replies[0][1].reply_markup.inline_keyboard.flat().map((button) => button.text),
     ['Cambiar', 'Eliminar'],
@@ -117,6 +158,68 @@ test('logs a Telegram expense rounded to cents with exact action buttons', async
     (button) => decodeExpenseCallback(button.callback_data)?.expenseId ===
       '22222222-2222-2222-2222-222222222222',
   ));
+});
+
+test('rejects income that rounds to zero before any storage lookup or write', async () => {
+  const calls = [];
+  const replies = [];
+  await handleExpenseMessage({
+    message: { text: '+0.004 dust' },
+    reply: async (message) => replies.push(message),
+  }, {
+    findBudgetId: async () => calls.push('budget'),
+    createFinancialEntryAndGetBalances: async () => calls.push('write'),
+  });
+
+  assert.deepEqual(calls, []);
+  assert.deepEqual(replies, ['Income amount must round to at least $0.01.']);
+});
+
+test('accepts the half-cent income boundary and stores one cent', async () => {
+  const writes = [];
+  await handleExpenseMessage({
+    message: { text: '+0.005 dust' },
+    reply: async () => {},
+  }, {
+    createFinancialEntryAndGetBalances: async (entry) => {
+      writes.push(entry);
+      return { expenseId: '22222222-2222-2222-2222-222222222222', dailyBalance: 0.01, periodBalance: 0.01 };
+    },
+  });
+
+  assert.equal(writes[0].amount, 0.01);
+  assert.equal(writes[0].type, 'income');
+});
+
+test('logs income without category lookup or correction and keeps deletion available', async () => {
+  const calls = [];
+  const replies = [];
+  await handleExpenseMessage({
+    message: { text: '+1400 saldo anterior' },
+    reply: async (...args) => replies.push(args),
+  }, {
+    findBudgetId: async () => calls.push('explicit'),
+    findLearnedBudget: async () => calls.push('learned'),
+    getBudgets: async () => calls.push('budgets'),
+    inferCategory: async () => calls.push('provider'),
+    createFinancialEntryAndGetBalances: async (entry) => {
+      calls.push(entry);
+      return {
+        expenseId: '22222222-2222-2222-2222-222222222222',
+        dailyBalance: 1400,
+        periodBalance: 1400,
+      };
+    },
+  });
+
+  assert.deepEqual(calls, [{
+    description: 'saldo anterior', amount: 1400, budgetId: null, type: 'income',
+  }]);
+  assert.equal(replies[0][0], 'Saldo diario: $1400.00\nSaldo del período: $1400.00');
+  assert.deepEqual(
+    replies[0][1].reply_markup.inline_keyboard.flat().map(({ text }) => text),
+    ['Eliminar'],
+  );
 });
 
 test('recategorizes the exact Telegram expense through inline category buttons', async () => {
@@ -168,9 +271,9 @@ test('explicit category skips learned lookup and provider inference', async () =
     findBudgetId: async (name) => { calls.push(`explicit:${name}`); return 'travel-id'; },
     findLearnedBudget: async () => calls.push('learned'),
     inferCategory: async () => calls.push('provider'),
-    createExpenseAndGetTotalToday: async (expense) => {
+    createFinancialEntryAndGetBalances: async (expense) => {
       calls.push(`write:${expense.budgetId}`);
-      return { expenseId: '11111111-1111-1111-1111-111111111111', totalToday: 50 };
+      return { expenseId: '11111111-1111-1111-1111-111111111111', dailyBalance: -50, periodBalance: -50 };
     },
   });
   assert.deepEqual(calls, ['explicit:Travel and Lodging', 'write:travel-id']);
@@ -183,14 +286,14 @@ test('learned hit skips provider and uses the shared success reply', async () =>
     findLearnedBudget: async (fingerprint) => { calls.push(`learned:${fingerprint}`); return { id: 'food-id', name: 'Food' }; },
     getBudgets: async () => { calls.push('budgets'); return []; },
     inferCategory: async () => { calls.push('provider'); return []; },
-    createExpenseAndGetTotalToday: async (expense) => {
+    createFinancialEntryAndGetBalances: async (expense) => {
       calls.push(`write:${expense.budgetId}`);
-      return { expenseId: '11111111-1111-1111-1111-111111111111', totalToday: 10 };
+      return { expenseId: '11111111-1111-1111-1111-111111111111', dailyBalance: -10, periodBalance: -10 };
     },
   });
   assert.equal(calls[0], 'learned:c798e5b18ed876efb8a937d27a0c48de53e3735e490e2116701901e369d8b7d9');
   assert.deepEqual(calls.slice(1), ['write:food-id']);
-  assert.match(replies[0][0], /Categoría: Food/);
+  assert.equal(replies[0][0], 'Saldo diario: $-10.00\nSaldo del período: $-10.00');
 });
 
 test('learned miss falls through to one ranked provider call and writes the top accepted ID', async () => {
@@ -199,9 +302,9 @@ test('learned miss falls through to one ranked provider call and writes the top 
     findLearnedBudget: async () => { calls.push('learned'); return null; },
     getBudgets: async () => { calls.push('budgets'); return [{ id: 'transport-id', name: 'Transport' }]; },
     inferCategory: async () => { calls.push('provider'); return [{ budgetId: 'transport-id', categoryName: 'Transport', confidence: 0.7, reason: 'hidden' }]; },
-    createExpenseAndGetTotalToday: async (expense) => {
+    createFinancialEntryAndGetBalances: async (expense) => {
       calls.push(`write:${expense.budgetId}`);
-      return { expenseId: '11111111-1111-1111-1111-111111111111', totalToday: 20 };
+      return { expenseId: '11111111-1111-1111-1111-111111111111', dailyBalance: -20, periodBalance: -20 };
     },
   });
   assert.deepEqual(calls, ['learned', 'budgets', 'provider', 'write:transport-id']);
@@ -242,7 +345,7 @@ test('reports only coarse failure enums and ignores reporter failures', async ()
       operation: 'expense_write',
       dependencies: {
         findLearnedBudget: async () => ({ id: 'private-id', name: 'Private category' }),
-        createExpenseAndGetTotalToday: async () => { throw new Error('secret'); },
+        createFinancialEntryAndGetBalances: async () => { throw new Error('secret'); },
       },
     },
   ];
@@ -306,7 +409,7 @@ test('low confidence and provider failures reply safely without an expense write
       findLearnedBudget: async () => null,
       getBudgets: async () => [{ id: 'one', name: 'Travel and Lodging' }, { id: 'two', name: 'Travel' }],
       inferCategory: provider,
-      createExpenseAndGetTotalToday: async () => { writes += 1; },
+      createFinancialEntryAndGetBalances: async () => { writes += 1; },
       reportOperation: () => {},
     });
     assert.equal(writes, 0);

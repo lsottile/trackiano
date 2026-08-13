@@ -1,4 +1,7 @@
+import { roundMoney } from './money.js';
+
 const FORMAT_ERROR = 'Format: {description} {amount} [category]';
+const INCOME_AMOUNT_ERROR = 'Income amount must round to at least $0.01.';
 const DELIMITED_FORMAT = 'Use: {description} {amount} | {category}';
 const DECIMAL = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/;
 
@@ -12,6 +15,27 @@ export function parseMessage(text) {
   const tokens = parts[0].trim().split(/\s+/);
   if (tokens.length < 2 || tokens[0] === '') {
     throw new Error(parts.length === 2 ? DELIMITED_FORMAT : FORMAT_ERROR);
+  }
+
+  const incomeIndexes = tokens
+    .map((token, index) => token.startsWith('+') ? index : -1)
+    .filter((index) => index >= 0);
+  if (incomeIndexes.length) {
+    const index = incomeIndexes[0];
+    const amount = Number(tokens[index]);
+    const validPosition = index === 0 || index === tokens.length - 1;
+    if (
+      parts.length !== 1 || incomeIndexes.length !== 1 || !validPosition ||
+      !isFiniteDecimal(tokens[index]) || amount <= 0 ||
+      tokens.filter(isFiniteDecimal).length !== 1
+    ) throw new Error(FORMAT_ERROR);
+    if (roundMoney(amount) <= 0) throw new Error(INCOME_AMOUNT_ERROR);
+    return {
+      description: tokens.filter((_, tokenIndex) => tokenIndex !== index).join(' '),
+      amount,
+      category: null,
+      type: 'income',
+    };
   }
 
   let amountTokenIndex = -1;

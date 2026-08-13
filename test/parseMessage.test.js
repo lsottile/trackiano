@@ -19,6 +19,30 @@ test('parses omitted category format', () => {
   });
 });
 
+test('parses explicit-plus income in either supported position', () => {
+  for (const input of ['+1400 saldo anterior', 'saldo anterior +1400']) {
+    assert.deepEqual(parseMessage(input), {
+      description: 'saldo anterior', amount: 1400, category: null, type: 'income',
+    });
+  }
+});
+
+test('rejects malformed or cent-rounded non-positive income and keeps signed expenses', () => {
+  for (const input of ['+ saldo anterior', 'saldo + anterior', '+0 saldo', '+10 saldo | Food']) {
+    assert.throws(() => parseMessage(input));
+  }
+  assert.throws(
+    () => parseMessage('+0.004 dust'),
+    /Income amount must round to at least \$0\.01\./,
+  );
+  assert.deepEqual(parseMessage('+0.005 dust'), {
+    description: 'dust', amount: 0.005, category: null, type: 'income',
+  });
+  assert.deepEqual(parseMessage('refund -12.50'), {
+    description: 'refund', amount: -12.5, category: null,
+  });
+});
+
 test('rejects missing amount', () => {
   assert.throws(
     () => parseMessage('coffee'),

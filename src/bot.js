@@ -10,7 +10,8 @@ import {
 } from "./categoryResponses.js";
 import {
   findBudgetId,
-  createExpenseAndGetTotalToday,
+  createFinancialEntryAndGetBalances,
+  startAccountingPeriod,
   getBudgets,
   getMonthlyExpenses,
   getMonthlyExpenseDetails,
@@ -145,11 +146,36 @@ export function registerCompleteSummaryHandler(composer, dependencies) {
   );
 }
 
+export function registerNewPeriodHandler(composer, {
+  ownerId = OWNER_ID,
+  startAccountingPeriod: startPeriod = startAccountingPeriod,
+} = {}) {
+  return composer.on("message:text").hears("/nuevo_mes", async (ctx) => {
+    if (ctx.from?.id !== ownerId) return ctx.reply("Unauthorized");
+    try {
+      const updateId = ctx.update?.update_id;
+      const messageId = ctx.message?.message_id;
+      const chatId = ctx.chat?.id ?? ctx.message?.chat?.id ?? ctx.from?.id;
+      const requestKey = Number.isSafeInteger(updateId)
+        ? `telegram-update:${updateId}`
+        : Number.isSafeInteger(messageId) && Number.isSafeInteger(chatId)
+          ? `telegram-message:${chatId}:${messageId}`
+          : null;
+      if (!requestKey) return ctx.reply("No pude identificar el comando. Probá de nuevo.");
+      await startPeriod({ requestKey });
+      return ctx.reply("Nuevo período iniciado con saldo $0.");
+    } catch {
+      return ctx.reply("No pude iniciar el nuevo período. Probá de nuevo.");
+    }
+  });
+}
+
 bot.use((ctx, next) => {
   if (ctx.from?.id !== OWNER_ID) return ctx.reply("Unauthorized");
   return next();
 });
 registerExpenseActionHandlers(bot);
+registerNewPeriodHandler(bot);
 
 bot.command("help", async (ctx) => {
   return ctx.reply(
@@ -157,6 +183,8 @@ bot.command("help", async (ctx) => {
       `*Log expense*\n` +
       `description amount\n` +
       `description amount category\n\n` +
+      `*Log income*\n` +
+      `+amount description or description +amount\n\n` +
       `*Queries*\n` +
       `/balance <category> — remaining balance for a category\n` +
       `/budget <category> — how much you can spend per day\n` +
@@ -166,6 +194,7 @@ bot.command("help", async (ctx) => {
       `/target [amount] — show or set the recurring daily target\n` +
       `/categories — available categories\n\n` +
       `*Management*\n` +
+      `/nuevo_mes — start a new accounting period\n` +
       `/new <name> <amount> — create a new category`,
     { parse_mode: "Markdown" },
   );
@@ -265,95 +294,90 @@ export async function handleExpenseMessage(ctx, {
   getBudgets: readBudgets = getBudgets,
   inferCategory: categorize = inferCategory,
   selectTopCandidate: selectCandidate = selectTopCandidate,
-  createExpenseAndGetTotalToday: writeExpense = createExpenseAndGetTotalToday,
+  createFinancialEntryAndGetBalances: writeEntry = createFinancialEntryAndGetBalances,
   reportOperation = defaultOperationReporter,
 } = {}) {
   try {
     const parsed = parseMessage(ctx.message.text);
     const { description, category } = parsed;
     const amount = roundMoney(parsed.amount);
+    const type = parsed.type ?? "expense";
+    let budgetId = null;
 
-    let budgetId;
-    let inferredCategoryName = null;
-
-    if (category) {
-      budgetId = await readBudgetId(category);
-      if (!budgetId) {
-        return ctx.reply(
-          `Categoría '${category}' no encontrada. Revisá /categories.`,
-        );
-      }
-    } else {
-      const fingerprint = fingerprintDescription(description);
-      let learnedBudget;
-      try {
-        learnedBudget = await readLearnedBudget(fingerprint);
-      } catch {
-        await reportFailure(reportOperation, "learned_lookup");
-        return ctx.reply(GENERIC_SAFE_CATEGORY_RESPONSE);
-      }
-      if (learnedBudget) {
-        budgetId = learnedBudget.id;
-        inferredCategoryName = learnedBudget.name;
+    if (type === "expense") {
+      if (category) {
+        budgetId = await readBudgetId(category);
+        if (!budgetId) {
+          return ctx.reply(
+            `Categoría '${category}' no encontrada. Revisá /categories.`,
+          );
+        }
       } else {
-        const budgets = await readBudgets();
-        let candidates;
+        const fingerprint = fingerprintDescription(description);
+        let learnedBudget;
         try {
-          candidates = await categorize({ description, amount, budgets });
+          learnedBudget = await readLearnedBudget(fingerprint);
         } catch {
-          await reportFailure(reportOperation, "provider_lookup");
+          await reportFailure(reportOperation, "learned_lookup");
           return ctx.reply(GENERIC_SAFE_CATEGORY_RESPONSE);
         }
+        if (learnedBudget) {
+          budgetId = learnedBudget.id;
+        } else {
+          const budgets = await readBudgets();
+          let candidates;
+          try {
+            candidates = await categorize({ description, amount, budgets });
+          } catch {
+            await reportFailure(reportOperation, "provider_lookup");
+            return ctx.reply(GENERIC_SAFE_CATEGORY_RESPONSE);
+          }
 
-        const candidate = selectCandidate(candidates);
-        if (!candidate) {
-          return ctx.reply(buildLowConfidenceReply({
-            originalText: ctx.message.text,
-            candidates,
-          }));
+          const candidate = selectCandidate(candidates);
+          if (!candidate) {
+            return ctx.reply(buildLowConfidenceReply({
+              originalText: ctx.message.text,
+              candidates,
+            }));
+          }
+          budgetId = candidate.budgetId;
         }
-        budgetId = candidate.budgetId;
-        inferredCategoryName = candidate.categoryName;
       }
     }
 
-    let expenseId;
-    let totalToday;
+    let result;
     try {
-      ({ expenseId, totalToday } = await writeExpense({
-        description,
-        amount,
-        budgetId,
-      }));
+      result = await writeEntry({ description, amount, budgetId, type });
     } catch {
       await reportFailure(reportOperation, "expense_write");
       return ctx.reply("Something went wrong, try again.");
     }
-    const categoryLine = inferredCategoryName
-      ? `\nCategoría: ${inferredCategoryName}`
-      : "";
-    return ctx.reply(
-      `Cargado ✓${categoryLine}\nLlevás $${formatMoney(totalToday)} hoy`,
-      {
-        reply_markup: {
-          inline_keyboard: [[
-            {
-              text: "Cambiar",
-              callback_data: encodeExpenseCallback("recategorize", expenseId),
-            },
-            {
-              text: "Eliminar",
-              callback_data: encodeExpenseCallback("delete", expenseId),
-            },
-          ]],
+    const buttons = type === "income"
+      ? [{
+        text: "Eliminar",
+        callback_data: encodeExpenseCallback("delete", result.expenseId),
+      }]
+      : [
+        {
+          text: "Cambiar",
+          callback_data: encodeExpenseCallback("recategorize", result.expenseId),
         },
-      },
+        {
+          text: "Eliminar",
+          callback_data: encodeExpenseCallback("delete", result.expenseId),
+        },
+      ];
+    return ctx.reply(
+      `Saldo diario: $${formatMoney(result.dailyBalance)}\n` +
+        `Saldo del período: $${formatMoney(result.periodBalance)}`,
+      { reply_markup: { inline_keyboard: [buttons] } },
     );
   } catch (err) {
     if (
       err.message.startsWith("Format:") ||
       err.message.startsWith("Use:") ||
-      err.message.includes("is not a valid amount")
+      err.message.includes("is not a valid amount") ||
+      err.message === "Income amount must round to at least $0.01."
     ) {
       return ctx.reply(err.message);
     }
