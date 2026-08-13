@@ -23,9 +23,9 @@ const BASE_METHODS = [
 
 const POSTGRES_FEATURE_METHODS = [
   'createFinancialEntryAndGetBalances',
+  'createPaydayAndGetBalances',
   'findLearnedBudget',
   'recategorizeExpenseAndLearn',
-  'startAccountingPeriod',
 ];
 
 export function createStorage({
@@ -70,7 +70,7 @@ export const claimSummaryPeriod = (...args) => callApplicationStorage('claimSumm
 export const getTotalSpentInPeriod = (...args) => callApplicationStorage('getTotalSpentInPeriod', args);
 export const getTotalSpentToday = (...args) => callApplicationStorage('getTotalSpentToday', args);
 export const createFinancialEntryAndGetBalances = (...args) => callApplicationStorage('createFinancialEntryAndGetBalances', args);
-export const startAccountingPeriod = (...args) => callApplicationStorage('startAccountingPeriod', args);
+export const createPaydayAndGetBalances = (...args) => callApplicationStorage('createPaydayAndGetBalances', args);
 export const getCategoryExpenses = (...args) => callApplicationStorage('getCategoryExpenses', args);
 export const createBudget = (...args) => callApplicationStorage('createBudget', args);
 export const getLastExpense = (...args) => callApplicationStorage('getLastExpense', args);

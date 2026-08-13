@@ -109,47 +109,66 @@ test('real PostgreSQL enforces ownership, cents, soft deletion, and atomic claim
     assert.equal(stored.rows[0].amount, '10.01');
     assert.equal(stored.rows[0].expense_date, '2026-08-10');
 
-    const baselineIncome = await repository.createFinancialEntryAndGetBalances({
-      description: 'Baseline income', amount: 20, budgetId: null, type: 'income',
+    const baseline = await repository.createFinancialEntryAndGetBalances({
+      description: 'Baseline', amount: 20, budgetId: null, type: 'income',
     });
-    assert.equal(baselineIncome.periodBalance, 9.99);
-    assert.ok([9.99, 20].includes(baselineIncome.dailyBalance));
-    const baselineDailyBalance = baselineIncome.dailyBalance;
-
-    const firstPeriodId = await repository.startAccountingPeriod({
-      requestKey: 'telegram-update:100',
-    });
-    assert.equal(await repository.startAccountingPeriod({
-      requestKey: 'telegram-update:100',
-    }), firstPeriodId);
-    const firstPeriodIncome = await repository.createFinancialEntryAndGetBalances({
-      description: 'First period income', amount: 5, budgetId: null, type: 'income',
+    const baselineMonth = baseline.monthlyBalance;
+    const firstPayday = await repository.createPaydayAndGetBalances({
+      requestKey: 'telegram-update:100', amount: 5, description: 'First salary',
     });
     assert.deepEqual(
-      { dailyBalance: firstPeriodIncome.dailyBalance, periodBalance: firstPeriodIncome.periodBalance },
-      { dailyBalance: baselineDailyBalance + 5, periodBalance: 5 },
+      [firstPayday.dailyBalance, firstPayday.monthlyBalance, firstPayday.payBalance],
+      [25, Number((baselineMonth + 5).toFixed(2)), 5],
     );
-
-    const secondPeriodId = await repository.startAccountingPeriod({
-      requestKey: 'telegram-update:101',
+    const firstPeriod = await database.query(
+      `SELECT id, started_at FROM accounting_periods
+       WHERE user_id = $1 AND request_key = 'telegram-update:100'`,
+      [firstUser.rows[0].id],
+    );
+    await database.query(
+      `INSERT INTO expenses
+         (user_id, description, amount, expense_date, entry_type, created_at, updated_at)
+       VALUES ($1, 'Unrelated same timestamp', 7, $2, 'income', $3, $3)`,
+      [firstUser.rows[0].id, repository.formatAppDate(firstPeriod.rows[0].started_at),
+        firstPeriod.rows[0].started_at],
+    );
+    const firstRetry = await repository.createPaydayAndGetBalances({
+      requestKey: 'telegram-update:100', amount: 999, description: 'ignored',
     });
-    assert.notEqual(secondPeriodId, firstPeriodId);
+    assert.equal(firstRetry.expenseId, firstPayday.expenseId);
+    assert.equal(firstRetry.payBalance, 12);
+
+    const secondPayday = await repository.createPaydayAndGetBalances({
+      requestKey: 'telegram-update:101', amount: 1, description: 'Latest salary',
+    });
+    assert.deepEqual(
+      [secondPayday.monthlyBalance, secondPayday.payBalance],
+      [Number((baselineMonth + 13).toFixed(2)), 1],
+    );
     assert.equal((await database.query(
       'SELECT count(*)::int AS count FROM accounting_periods WHERE user_id = $1',
       [firstUser.rows[0].id],
     )).rows[0].count, 2);
-    const latestPeriodIncome = await repository.createFinancialEntryAndGetBalances({
-      description: 'Latest period income', amount: 1, budgetId: null, type: 'income',
+    assert.equal((await database.query(
+      "SELECT count(*)::int AS count FROM expenses WHERE user_id = $1 AND description LIKE '%salary'",
+      [firstUser.rows[0].id],
+    )).rows[0].count, 2);
+    await repository.deleteExpense(secondPayday.expenseId);
+    const deletedRetry = await repository.createPaydayAndGetBalances({
+      requestKey: 'telegram-update:101', amount: 999, description: 'ignored',
     });
-    assert.equal(latestPeriodIncome.periodBalance, 1);
-    await repository.deleteExpense(latestPeriodIncome.expenseId);
+    assert.equal(deletedRetry.expenseId, secondPayday.expenseId);
+    assert.equal(deletedRetry.payBalance, 0);
     const afterDeletion = await repository.createFinancialEntryAndGetBalances({
       description: 'After deletion', amount: 2, budgetId: null, type: 'income',
     });
-    assert.deepEqual(
-      { dailyBalance: afterDeletion.dailyBalance, periodBalance: afterDeletion.periodBalance },
-      { dailyBalance: baselineDailyBalance + 7, periodBalance: 2 },
-    );
+    assert.equal(afterDeletion.payBalance, 2);
+    await database.query(`CREATE FUNCTION fail_payday_income() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'forced payday failure'; END $$`);
+    await database.query(`CREATE TRIGGER fail_payday_income BEFORE INSERT ON expenses FOR EACH ROW EXECUTE FUNCTION fail_payday_income()`);
+    await assert.rejects(repository.createPaydayAndGetBalances(
+      { requestKey: 'telegram-update:rollback', amount: 3, description: 'Rollback' }), /forced payday failure/);
+    assert.equal((await database.query("SELECT count(*)::int AS count FROM accounting_periods WHERE request_key = 'telegram-update:rollback'")).rows[0].count, 0);
+    await database.query('DROP TRIGGER fail_payday_income ON expenses; DROP FUNCTION fail_payday_income()');
 
     const alternateBudget = await database.query(
       `INSERT INTO budgets (user_id, name, amount)

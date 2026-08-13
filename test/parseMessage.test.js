@@ -11,11 +11,14 @@ test('parses old explicit category format', () => {
   });
 });
 
-test('parses omitted category format', () => {
-  assert.deepEqual(parseMessage('coffee with milk 50'), {
-    description: 'coffee with milk',
-    amount: 50,
-    category: null,
+test('parses amount-first expenses while preserving description-first syntax', () => {
+  for (const input of ['1400 groceries', 'groceries 1400']) {
+    assert.deepEqual(parseMessage(input), {
+      description: 'groceries', amount: 1400, category: null,
+    });
+  }
+  assert.deepEqual(parseMessage('coffee 50 food'), {
+    description: 'coffee', amount: 50, category: 'food',
   });
 });
 
@@ -46,7 +49,7 @@ test('rejects malformed or cent-rounded non-positive income and keeps signed exp
 test('rejects missing amount', () => {
   assert.throws(
     () => parseMessage('coffee'),
-    /Format: \{description\} \{amount\} \[category\]/,
+    /Format: \{amount\} \{description\} or \{description\} \{amount\} \[category\]/,
   );
 });
 
@@ -57,11 +60,10 @@ test('rejects invalid amount in explicit category format', () => {
   );
 });
 
-test('rejects missing description', () => {
-  assert.throws(
-    () => parseMessage('50 food'),
-    /Format: \{description\} \{amount\} \[category\]/,
-  );
+test('rejects missing descriptions and ambiguous amount-first forms', () => {
+  for (const input of ['50', '50 groceries 2', '50 groceries |']) {
+    assert.throws(() => parseMessage(input));
+  }
 });
 
 test('parses a multi-word category after the rightmost finite amount', () => {
@@ -88,13 +90,16 @@ test('fails closed on an undelimited numeric-suffixed category', () => {
   for (const input of ['snack 5 2', 'snack 5 2 Food', 'snack 5 Category 2']) {
     assert.throws(
       () => parseMessage(input),
-      /Use: \{description\} \{amount\} \| \{category\}/,
+      /Use: \{amount\} \{description\} \| \{category\}/,
     );
   }
 });
 
 test('uses a literal delimiter for numeric-suffixed or multi-word categories', () => {
   assert.deepEqual(parseMessage('snack 5 | Category 2'), {
+    description: 'snack', amount: 5, category: 'Category 2',
+  });
+  assert.deepEqual(parseMessage('5 snack | Category 2'), {
     description: 'snack', amount: 5, category: 'Category 2',
   });
   assert.deepEqual(parseMessage('hotel 50 | Travel and Lodging'), {
