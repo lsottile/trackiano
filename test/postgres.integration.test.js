@@ -96,6 +96,57 @@ test('real PostgreSQL enforces ownership, cents, soft deletion, and atomic claim
       telegramUserId: 42,
       timeZone: 'America/Guatemala',
     });
+
+    const balanceUser = await database.query(
+      `INSERT INTO users (telegram_user_id, timezone)
+       VALUES (44, 'America/Guatemala') RETURNING id`,
+    );
+    const balanceUserId = balanceUser.rows[0].id;
+    const balanceBudget = await database.query(
+      `INSERT INTO budgets (user_id, name, amount)
+       VALUES ($1, 'Balance regression', 100) RETURNING id`,
+      [balanceUserId],
+    );
+    const balanceBudgetId = balanceBudget.rows[0].id;
+    await database.query(
+      `INSERT INTO accounting_periods (user_id, request_key, started_at)
+       VALUES ($1, 'monthly-date-regression',
+         date_trunc('month', clock_timestamp() AT TIME ZONE 'America/Guatemala')
+           AT TIME ZONE 'America/Guatemala')`,
+      [balanceUserId],
+    );
+    await database.query(
+      `INSERT INTO expenses
+         (user_id, budget_id, description, amount, expense_date, entry_type, created_at, updated_at)
+       VALUES
+         ($1, $2, 'Migrated historical expense', 40,
+           date_trunc('month', clock_timestamp() AT TIME ZONE 'America/Guatemala')::date - 1,
+           'expense', clock_timestamp(), clock_timestamp()),
+         ($1, NULL, 'Current month imported early', 10,
+           date_trunc('month', clock_timestamp() AT TIME ZONE 'America/Guatemala')::date,
+           'income',
+           (date_trunc('month', clock_timestamp() AT TIME ZONE 'America/Guatemala')
+             AT TIME ZONE 'America/Guatemala') - interval '1 second',
+           (date_trunc('month', clock_timestamp() AT TIME ZONE 'America/Guatemala')
+             AT TIME ZONE 'America/Guatemala') - interval '1 second'),
+         ($1, $2, 'Current month imported later', 3,
+           (clock_timestamp() AT TIME ZONE 'America/Guatemala')::date,
+           'expense', clock_timestamp(), clock_timestamp()),
+         ($1, $2, 'Future dated expense', 100,
+           (clock_timestamp() AT TIME ZONE 'America/Guatemala')::date + 1,
+           'expense', clock_timestamp(), clock_timestamp())`,
+      [balanceUserId, balanceBudgetId],
+    );
+    const balanceRepository = createPostgresRepository(database, {
+      telegramUserId: 44,
+      timeZone: 'America/Guatemala',
+    });
+    const dateBasedBalances = await balanceRepository.createFinancialEntryAndGetBalances({
+      description: 'Balance probe', amount: 1, budgetId: null, type: 'income',
+    });
+    assert.equal(dateBasedBalances.monthlyBalance, 8);
+    assert.equal(dateBasedBalances.payBalance, -142);
+
     const expenseId = await repository.createExpense({
       budgetId: firstBudget.rows[0].id,
       description: 'Coffee',
