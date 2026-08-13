@@ -81,7 +81,7 @@ test('derives stable, distinct, owner-scoped valid UUIDs for payday income', () 
   assert.match(first, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 });
 
-test('locks the owner, obtains one database timestamp, and calculates timestamp balances', async () => {
+test('locks the owner, obtains one database timestamp, and separates calendar-date monthly balance from timestamp pay balance', async () => {
   const occurredAt = new Date('2026-08-02T05:30:00.000Z');
   const database = fakeDatabase((sql, params) => {
     if (sql.startsWith('SELECT clock_timestamp()')) {
@@ -97,10 +97,15 @@ test('locks the owner, obtains one database timestamp, and calculates timestamp 
     }
     if (sql.includes('AS daily_balance')) {
       assert.match(sql, /ORDER BY started_at DESC, id DESC/);
+      assert.match(sql, /e\.expense_date >= \$5::date AND e\.expense_date <= \$2::date/);
+      assert.doesNotMatch(sql, /FILTER \(WHERE e\.created_at[^)]*\), 0\) AS monthly_balance/);
+      assert.match(sql, /pay_balance/);
       assert.match(sql, /e\.created_at >= COALESCE\(p\.started_at, b\.month_start\)/);
       assert.match(sql, /date_trunc\('month', \$3 AT TIME ZONE \$4\)[\s\S]*AT TIME ZONE \$4/);
       assert.match(sql, /e\.deleted_at IS NULL/);
-      assert.deepEqual(params, [userId, '2026-08-01', occurredAt, 'America/Guatemala']);
+      assert.deepEqual(params, [
+        userId, '2026-08-01', occurredAt, 'America/Guatemala', '2026-08-01',
+      ]);
       return { rows: [{ daily_balance: '90.00', monthly_balance: '70.00', pay_balance: '80.00' }] };
     }
   });

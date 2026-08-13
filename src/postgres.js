@@ -123,6 +123,7 @@ export function createPostgresRepository(database, {
 
   async function balancesWith(executor, userId, now) {
     const today = formatDateInTimeZone(now, timeZone);
+    const monthStartDate = `${today.slice(0, 7)}-01`;
     const result = await executor.query(
       `WITH latest_period AS (
          SELECT started_at FROM accounting_periods
@@ -135,7 +136,7 @@ export function createPostgresRepository(database, {
          COALESCE(SUM(CASE WHEN e.entry_type = 'income' THEN e.amount ELSE -e.amount END)
            FILTER (WHERE e.expense_date = $2), 0) AS daily_balance,
          COALESCE(SUM(CASE WHEN e.entry_type = 'income' THEN e.amount ELSE -e.amount END)
-           FILTER (WHERE e.created_at >= b.month_start AND e.created_at <= $3), 0) AS monthly_balance,
+           FILTER (WHERE e.expense_date >= $5::date AND e.expense_date <= $2::date), 0) AS monthly_balance,
          COALESCE(SUM(CASE WHEN e.entry_type = 'income' THEN e.amount ELSE -e.amount END)
            FILTER (WHERE e.created_at >= COALESCE(p.started_at, b.month_start)
              AND e.created_at <= $3), 0) AS pay_balance
@@ -143,7 +144,7 @@ export function createPostgresRepository(database, {
        LEFT JOIN latest_period AS p ON true
        LEFT JOIN expenses AS e ON e.user_id = $1 AND e.deleted_at IS NULL
        GROUP BY b.month_start, p.started_at`,
-      [userId, today, now, timeZone],
+      [userId, today, now, timeZone, monthStartDate],
     );
     return {
       dailyBalance: money(result.rows[0]?.daily_balance ?? 0),
