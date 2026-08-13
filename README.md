@@ -11,7 +11,7 @@ Send a message with the format:
 {description} {amount} | {category}
 ```
 Examples: `coffee 50`, `hotel 50 Travel and Lodging`, `snack 5 | Category 2`.
-Amounts use finite decimal syntax only; comma decimals, hexadecimal, binary, and exponent forms are rejected. Use the literal `|` delimiter for numeric-suffixed categories or whenever an explicit boundary is clearer. Ambiguous undelimited numeric suffixes fail closed.
+Prefix or suffix an amount with an explicit plus to record manual income, for example `+1400 opening balance` or `opening balance +1400`. Income is uncategorized. Use `/nuevo_mes` to open a new accounting period with a zero period balance, then add prior savings explicitly as income if desired. The daily balance still includes every entry from the current local calendar day, including entries created before `/nuevo_mes`. Until the first `/nuevo_mes`, the active period has an open baseline and includes all existing non-deleted history. Amounts use finite decimal syntax only; comma decimals, hexadecimal, binary, and exponent forms are rejected. Use the literal `|` delimiter for numeric-suffixed categories or whenever an explicit boundary is clearer. Ambiguous undelimited numeric suffixes fail closed.
 
 When category is omitted, the bot normalizes the current description with NFKC, trims/collapses whitespace, lowercases it, and hashes it with SHA-256. A same-user learned correction is checked locally first. Fingerprints are pseudonymous and are never logged or sent as history. On a miss, one OpenRouter request uses current description/amount, the current PostgreSQL category allowlist, and static bilingual guidance, with an 8-second maximum and no retry. Low-confidence results write nothing and return complete resend examples only when the reply is at most 4,096 JavaScript UTF-16 units; otherwise they use a generic safe response.
 
@@ -28,6 +28,7 @@ When category is omitted, the bot normalizes the current description with NFKC, 
 - `/categories` — list all available categories
 
 **Management**
+- `/nuevo_mes` — open a new accounting period with a zero balance
 - `/new <name> <amount>` — create a new budget category
 - `/help` — show all available commands
 
@@ -49,7 +50,7 @@ When category is omitted, the bot normalizes the current description with NFKC, 
 | `OPENROUTER_MODEL` | — | OpenRouter model for category inference, defaults to `google/gemini-2.5-flash` |
 | `APP_LANGUAGE` | — | User language stored during migration, defaults to `es` |
 | `APP_CURRENCY` | — | ISO currency stored during migration, defaults to `USD` |
-| `APP_TIMEZONE` | — | Timezone used for expense dates and daily totals, defaults to `UTC` |
+| `APP_TIMEZONE` | — | Timezone used for entry dates and calendar balance periods, defaults to `UTC` |
 | `PAY_DATE_DAY` | — | Day of month for payday (defaults to last day of month) |
 
 ## Setup
@@ -111,8 +112,10 @@ explicit approval; normal tests do not mutate either remote environment.
 
 PostgreSQL support is multi-user-ready but the current bot still binds every operation
 to `TELEGRAM_OWNER_ID`. Takenos is intentionally not part of this schema or migration.
-Money uses `NUMERIC(12,2)`, expense dates remain local calendar dates, and deleted
-expenses are retained with a soft-delete timestamp.
+Money uses `NUMERIC(12,2)`, entry dates remain local calendar dates, and deleted
+entries are retained with a soft-delete timestamp. Migration `004_income_entries.sql`
+keeps existing/imported rows as expenses and allows uncategorized manual income.
+Migration `005_accounting_periods.sql` stores immutable owner-scoped period boundaries and idempotent Telegram request keys.
 
 Deploy migration-first: apply versioned schema migrations only after configuring an approved database and confirming backup/rollback readiness and migration-runner exclusivity. Migration `003_category_inference_rules.sql` is additive, performs no backfill, and retains learned rules independently of source expenses. Normal `npm test` skips the opt-in PostgreSQL integration scenario; `npm run test:postgres` fails unless `TEST_DATABASE_URL` is explicitly set.
 

@@ -13,7 +13,6 @@ const BASE_METHODS = [
   'claimSummaryPeriod',
   'getTotalSpentInPeriod',
   'getTotalSpentToday',
-  'createExpenseAndGetTotalToday',
   'getCategoryExpenses',
   'createBudget',
   'getLastExpense',
@@ -23,8 +22,10 @@ const BASE_METHODS = [
 ];
 
 const POSTGRES_FEATURE_METHODS = [
+  'createFinancialEntryAndGetBalances',
   'findLearnedBudget',
   'recategorizeExpenseAndLearn',
+  'startAccountingPeriod',
 ];
 
 export function createStorage({
@@ -68,7 +69,8 @@ export const setDailyTarget = (...args) => callApplicationStorage('setDailyTarge
 export const claimSummaryPeriod = (...args) => callApplicationStorage('claimSummaryPeriod', args);
 export const getTotalSpentInPeriod = (...args) => callApplicationStorage('getTotalSpentInPeriod', args);
 export const getTotalSpentToday = (...args) => callApplicationStorage('getTotalSpentToday', args);
-export const createExpenseAndGetTotalToday = (...args) => callApplicationStorage('createExpenseAndGetTotalToday', args);
+export const createFinancialEntryAndGetBalances = (...args) => callApplicationStorage('createFinancialEntryAndGetBalances', args);
+export const startAccountingPeriod = (...args) => callApplicationStorage('startAccountingPeriod', args);
 export const getCategoryExpenses = (...args) => callApplicationStorage('getCategoryExpenses', args);
 export const createBudget = (...args) => callApplicationStorage('createBudget', args);
 export const getLastExpense = (...args) => callApplicationStorage('getLastExpense', args);

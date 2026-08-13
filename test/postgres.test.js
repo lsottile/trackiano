@@ -51,7 +51,7 @@ test('returns only owner-scoped budgets and maps numeric money values', async ()
 test('creates a cent-rounded expense on the app-local calendar date', async () => {
   const database = fakeDatabase((sql, params) => {
     if (sql.startsWith('INSERT INTO expenses')) {
-      assert.deepEqual(params, [userId, budgetId, 'Coffee', 10.01, '2026-07-19']);
+      assert.deepEqual(params, [userId, budgetId, 'Coffee', 10.01, '2026-07-19', 'expense']);
       return { rows: [{ id: expenseId }], rowCount: 1 };
     }
   });
@@ -66,6 +66,106 @@ test('creates a cent-rounded expense on the app-local calendar date', async () =
     budgetId,
     now: new Date('2026-07-20T05:30:00.000Z'),
   }), expenseId);
+});
+
+test('locks the owner before using one database wall clock for entry membership', async () => {
+  const occurredAt = new Date('2026-08-02T05:30:00.000Z');
+  const database = fakeDatabase((sql, params) => {
+    if (sql.startsWith('SELECT clock_timestamp()')) {
+      return { rows: [{ occurred_at: occurredAt }], rowCount: 1 };
+    }
+    if (sql.startsWith('INSERT INTO expenses')) {
+      assert.deepEqual(params, [
+        userId, null, 'Opening balance', 100.01, '2026-08-01', 'income',
+        occurredAt, occurredAt,
+      ]);
+      return { rows: [{ id: expenseId }], rowCount: 1 };
+    }
+    if (sql.includes('AS daily_balance')) {
+      assert.match(sql, /entry_type = 'income' THEN e\.amount ELSE -e\.amount/);
+      assert.match(sql, /WHERE user_id = \$1[\s\S]*ORDER BY started_at DESC, id DESC[\s\S]*LIMIT 1/);
+      assert.match(sql, /expense_date = \$2/);
+      assert.match(sql, /started_at IS NULL OR e\.created_at >=/);
+      assert.match(sql, /e\.deleted_at IS NULL/);
+      assert.deepEqual(params, [userId, '2026-08-01']);
+      return { rows: [{ daily_balance: '90.00', period_balance: '80.00' }] };
+    }
+  });
+  const repository = createPostgresRepository(database, {
+    telegramUserId: 42, timeZone: 'America/Guatemala',
+  });
+
+  assert.deepEqual(await repository.createFinancialEntryAndGetBalances({
+    description: 'Opening balance', amount: 100.005, budgetId: null, type: 'income',
+  }), { expenseId, dailyBalance: 90, periodBalance: 80 });
+  const transactionCalls = database.calls.slice(
+    database.calls.findIndex(({ sql }) => sql === 'TRANSACTION') + 1,
+  );
+  assert.match(transactionCalls[0].sql, /pg_advisory_xact_lock/);
+  assert.deepEqual(transactionCalls[0].params, [userId]);
+  assert.match(transactionCalls[1].sql, /^SELECT clock_timestamp\(\)/);
+  assert.match(transactionCalls[2].sql, /^INSERT INTO expenses/);
+});
+
+test('opens idempotent owner periods after the same advisory lock and database clock', async () => {
+  const startedAt = new Date('2026-08-08T14:30:00.000Z');
+  const periodId = '44444444-4444-4444-4444-444444444444';
+  let inserts = 0;
+  const database = fakeDatabase((sql, params) => {
+    if (sql.startsWith('SELECT clock_timestamp()')) {
+      return { rows: [{ occurred_at: startedAt }], rowCount: 1 };
+    }
+    if (sql.startsWith('INSERT INTO accounting_periods')) {
+      inserts += 1;
+      assert.match(sql, /ON CONFLICT \(user_id, request_key\) DO NOTHING/);
+      assert.deepEqual(params, [userId, 'telegram-update:987', startedAt]);
+      return inserts === 1
+        ? { rows: [{ id: periodId }], rowCount: 1 }
+        : { rows: [], rowCount: 0 };
+    }
+    if (sql.includes('FROM accounting_periods') && sql.includes('request_key')) {
+      assert.deepEqual(params, [userId, 'telegram-update:987']);
+      return { rows: [{ id: periodId }], rowCount: 1 };
+    }
+    if (/INSERT INTO (expenses|budgets)/.test(sql)) assert.fail(`synthetic write: ${sql}`);
+  });
+  const repository = createPostgresRepository(database, { telegramUserId: 42 });
+
+  assert.equal(await repository.startAccountingPeriod({
+    requestKey: 'telegram-update:987',
+  }), periodId);
+  assert.equal(await repository.startAccountingPeriod({
+    requestKey: 'telegram-update:987',
+  }), periodId);
+  for (const transactionIndex of database.calls
+    .map(({ sql }, index) => sql === 'TRANSACTION' ? index : -1)
+    .filter((index) => index >= 0)) {
+    assert.match(database.calls[transactionIndex + 1].sql, /pg_advisory_xact_lock/);
+    assert.match(database.calls[transactionIndex + 2].sql, /^SELECT clock_timestamp\(\)/);
+    assert.match(database.calls[transactionIndex + 3].sql, /^INSERT INTO accounting_periods/);
+  }
+  assert.equal(database.calls.some(({ sql }) => sql.startsWith('UPDATE expenses')), false);
+});
+
+test('active-period balance uses an open baseline when no owner marker exists', async () => {
+  const database = fakeDatabase((sql) => {
+    if (sql.startsWith('SELECT clock_timestamp()')) {
+      return { rows: [{ occurred_at: new Date('2026-08-08T12:00:00Z') }], rowCount: 1 };
+    }
+    if (sql.includes('AS daily_balance')) {
+      assert.match(sql, /latest_period[\s\S]*LEFT JOIN/);
+      assert.match(sql, /started_at IS NULL OR/);
+      return { rows: [{ daily_balance: '-5.00', period_balance: '125.00' }] };
+    }
+  });
+  const repository = createPostgresRepository(database, { telegramUserId: 42 });
+
+  assert.deepEqual(
+    await repository.createFinancialEntryAndGetBalances({
+      description: 'Coffee', amount: 5, budgetId,
+    }),
+    { expenseId: '', dailyBalance: -5, periodBalance: 125 },
+  );
 });
 
 test('changes or soft-deletes only the owners exact expense', async () => {
@@ -220,6 +320,22 @@ test('recategorization propagates update and upsert failures through the transac
       assert.equal(database.calls.some(({ sql }) => sql.startsWith('INSERT INTO category_inference_rules')), false);
     }
   }
+});
+
+test('all spending queries explicitly exclude income', async () => {
+  const database = fakeDatabase((sql) => {
+    if (sql.includes('FROM expenses')) return { rows: [], rowCount: 0 };
+  });
+  const repository = createPostgresRepository(database, { telegramUserId: 42 });
+  await repository.getPeriodSpent(budgetId, new Date());
+  await repository.getExpensesInRange('2026-07-01', '2026-08-01');
+  await repository.getMonthlyExpenseDetails();
+  await repository.getTotalSpentInPeriod(new Date());
+  await repository.getCategoryExpenses(budgetId, new Date());
+  await repository.getLastExpense();
+  const spendingQueries = database.calls.filter(({ sql }) => sql.includes('FROM expenses'));
+  assert.ok(spendingQueries.length >= 6);
+  assert.ok(spendingQueries.every(({ sql }) => sql.includes("entry_type = 'expense'")));
 });
 
 test('groups active expenses by budget in a half-open date range', async () => {

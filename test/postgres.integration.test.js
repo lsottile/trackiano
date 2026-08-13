@@ -29,21 +29,32 @@ test('real PostgreSQL enforces ownership, cents, soft deletion, and atomic claim
       '001_initial.sql',
       '002_lock_down_public_schema.sql',
       '003_category_inference_rules.sql',
+      '004_income_entries.sql',
+      '005_accounting_periods.sql',
     ]);
     assert.deepEqual(await runMigrations(database, { directory }), []);
     const protectedTables = await database.query(
       `SELECT relname FROM pg_class
        WHERE relname IN ('users', 'budgets', 'expenses', 'user_settings',
-                         'category_inference_rules')
-         AND relrowsecurity = true`,
+                         'category_inference_rules', 'accounting_periods')
+         AND relrowsecurity = true
+       ORDER BY relname`,
     );
-    assert.equal(protectedTables.rows.length, 5);
+    assert.deepEqual(protectedTables.rows.map(({ relname }) => relname), [
+      'accounting_periods',
+      'budgets',
+      'category_inference_rules',
+      'expenses',
+      'user_settings',
+      'users',
+    ]);
     const clientPrivileges = await database.query(
       `SELECT has_table_privilege('anon', 'category_inference_rules', 'SELECT') AS anon_select,
-              has_table_privilege('authenticated', 'category_inference_rules', 'INSERT') AS authenticated_insert`,
+              has_table_privilege('authenticated', 'category_inference_rules', 'INSERT') AS authenticated_insert,
+                  has_table_privilege('anon', 'accounting_periods', 'SELECT') AS periods_select`,
     );
     assert.deepEqual(clientPrivileges.rows[0], {
-      anon_select: false, authenticated_insert: false,
+      anon_select: false, authenticated_insert: false, periods_select: false,
     });
     assert.equal((await database.query('SELECT count(*)::int AS count FROM category_inference_rules')).rows[0].count, 0);
     const firstUser = await database.query(
@@ -97,6 +108,48 @@ test('real PostgreSQL enforces ownership, cents, soft deletion, and atomic claim
     );
     assert.equal(stored.rows[0].amount, '10.01');
     assert.equal(stored.rows[0].expense_date, '2026-08-10');
+
+    const baselineIncome = await repository.createFinancialEntryAndGetBalances({
+      description: 'Baseline income', amount: 20, budgetId: null, type: 'income',
+    });
+    assert.equal(baselineIncome.periodBalance, 9.99);
+    assert.ok([9.99, 20].includes(baselineIncome.dailyBalance));
+    const baselineDailyBalance = baselineIncome.dailyBalance;
+
+    const firstPeriodId = await repository.startAccountingPeriod({
+      requestKey: 'telegram-update:100',
+    });
+    assert.equal(await repository.startAccountingPeriod({
+      requestKey: 'telegram-update:100',
+    }), firstPeriodId);
+    const firstPeriodIncome = await repository.createFinancialEntryAndGetBalances({
+      description: 'First period income', amount: 5, budgetId: null, type: 'income',
+    });
+    assert.deepEqual(
+      { dailyBalance: firstPeriodIncome.dailyBalance, periodBalance: firstPeriodIncome.periodBalance },
+      { dailyBalance: baselineDailyBalance + 5, periodBalance: 5 },
+    );
+
+    const secondPeriodId = await repository.startAccountingPeriod({
+      requestKey: 'telegram-update:101',
+    });
+    assert.notEqual(secondPeriodId, firstPeriodId);
+    assert.equal((await database.query(
+      'SELECT count(*)::int AS count FROM accounting_periods WHERE user_id = $1',
+      [firstUser.rows[0].id],
+    )).rows[0].count, 2);
+    const latestPeriodIncome = await repository.createFinancialEntryAndGetBalances({
+      description: 'Latest period income', amount: 1, budgetId: null, type: 'income',
+    });
+    assert.equal(latestPeriodIncome.periodBalance, 1);
+    await repository.deleteExpense(latestPeriodIncome.expenseId);
+    const afterDeletion = await repository.createFinancialEntryAndGetBalances({
+      description: 'After deletion', amount: 2, budgetId: null, type: 'income',
+    });
+    assert.deepEqual(
+      { dailyBalance: afterDeletion.dailyBalance, periodBalance: afterDeletion.periodBalance },
+      { dailyBalance: baselineDailyBalance + 7, periodBalance: 2 },
+    );
 
     const alternateBudget = await database.query(
       `INSERT INTO budgets (user_id, name, amount)
