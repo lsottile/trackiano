@@ -150,7 +150,6 @@ export function createPostgresMigrationTarget(database) {
           `SELECT id, budget_id, description, amount, expense_date
            FROM expenses
            WHERE user_id = $1 AND deleted_at IS NULL
-             AND entry_type = 'expense'
            ORDER BY id`,
           [userId],
         );

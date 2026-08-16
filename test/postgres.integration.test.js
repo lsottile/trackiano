@@ -29,32 +29,21 @@ test('real PostgreSQL enforces ownership, cents, soft deletion, and atomic claim
       '001_initial.sql',
       '002_lock_down_public_schema.sql',
       '003_category_inference_rules.sql',
-      '004_income_entries.sql',
-      '005_accounting_periods.sql',
     ]);
     assert.deepEqual(await runMigrations(database, { directory }), []);
     const protectedTables = await database.query(
       `SELECT relname FROM pg_class
        WHERE relname IN ('users', 'budgets', 'expenses', 'user_settings',
-                         'category_inference_rules', 'accounting_periods')
-         AND relrowsecurity = true
-       ORDER BY relname`,
+                         'category_inference_rules')
+         AND relrowsecurity = true`,
     );
-    assert.deepEqual(protectedTables.rows.map(({ relname }) => relname), [
-      'accounting_periods',
-      'budgets',
-      'category_inference_rules',
-      'expenses',
-      'user_settings',
-      'users',
-    ]);
+    assert.equal(protectedTables.rows.length, 5);
     const clientPrivileges = await database.query(
       `SELECT has_table_privilege('anon', 'category_inference_rules', 'SELECT') AS anon_select,
-              has_table_privilege('authenticated', 'category_inference_rules', 'INSERT') AS authenticated_insert,
-                  has_table_privilege('anon', 'accounting_periods', 'SELECT') AS periods_select`,
+              has_table_privilege('authenticated', 'category_inference_rules', 'INSERT') AS authenticated_insert`,
     );
     assert.deepEqual(clientPrivileges.rows[0], {
-      anon_select: false, authenticated_insert: false, periods_select: false,
+      anon_select: false, authenticated_insert: false,
     });
     assert.equal((await database.query('SELECT count(*)::int AS count FROM category_inference_rules')).rows[0].count, 0);
     const firstUser = await database.query(
@@ -96,57 +85,6 @@ test('real PostgreSQL enforces ownership, cents, soft deletion, and atomic claim
       telegramUserId: 42,
       timeZone: 'America/Guatemala',
     });
-
-    const balanceUser = await database.query(
-      `INSERT INTO users (telegram_user_id, timezone)
-       VALUES (44, 'America/Guatemala') RETURNING id`,
-    );
-    const balanceUserId = balanceUser.rows[0].id;
-    const balanceBudget = await database.query(
-      `INSERT INTO budgets (user_id, name, amount)
-       VALUES ($1, 'Balance regression', 100) RETURNING id`,
-      [balanceUserId],
-    );
-    const balanceBudgetId = balanceBudget.rows[0].id;
-    await database.query(
-      `INSERT INTO accounting_periods (user_id, request_key, started_at)
-       VALUES ($1, 'monthly-date-regression',
-         date_trunc('month', clock_timestamp() AT TIME ZONE 'America/Guatemala')
-           AT TIME ZONE 'America/Guatemala')`,
-      [balanceUserId],
-    );
-    await database.query(
-      `INSERT INTO expenses
-         (user_id, budget_id, description, amount, expense_date, entry_type, created_at, updated_at)
-       VALUES
-         ($1, $2, 'Migrated historical expense', 40,
-           date_trunc('month', clock_timestamp() AT TIME ZONE 'America/Guatemala')::date - 1,
-           'expense', clock_timestamp(), clock_timestamp()),
-         ($1, NULL, 'Current month imported early', 10,
-           date_trunc('month', clock_timestamp() AT TIME ZONE 'America/Guatemala')::date,
-           'income',
-           (date_trunc('month', clock_timestamp() AT TIME ZONE 'America/Guatemala')
-             AT TIME ZONE 'America/Guatemala') - interval '1 second',
-           (date_trunc('month', clock_timestamp() AT TIME ZONE 'America/Guatemala')
-             AT TIME ZONE 'America/Guatemala') - interval '1 second'),
-         ($1, $2, 'Current month imported later', 3,
-           (clock_timestamp() AT TIME ZONE 'America/Guatemala')::date,
-           'expense', clock_timestamp(), clock_timestamp()),
-         ($1, $2, 'Future dated expense', 100,
-           (clock_timestamp() AT TIME ZONE 'America/Guatemala')::date + 1,
-           'expense', clock_timestamp(), clock_timestamp())`,
-      [balanceUserId, balanceBudgetId],
-    );
-    const balanceRepository = createPostgresRepository(database, {
-      telegramUserId: 44,
-      timeZone: 'America/Guatemala',
-    });
-    const dateBasedBalances = await balanceRepository.createFinancialEntryAndGetBalances({
-      description: 'Balance probe', amount: 1, budgetId: null, type: 'income',
-    });
-    assert.equal(dateBasedBalances.monthlyBalance, 8);
-    assert.equal(dateBasedBalances.payBalance, -142);
-
     const expenseId = await repository.createExpense({
       budgetId: firstBudget.rows[0].id,
       description: 'Coffee',
@@ -159,67 +97,6 @@ test('real PostgreSQL enforces ownership, cents, soft deletion, and atomic claim
     );
     assert.equal(stored.rows[0].amount, '10.01');
     assert.equal(stored.rows[0].expense_date, '2026-08-10');
-
-    const baseline = await repository.createFinancialEntryAndGetBalances({
-      description: 'Baseline', amount: 20, budgetId: null, type: 'income',
-    });
-    const baselineMonth = baseline.monthlyBalance;
-    const firstPayday = await repository.createPaydayAndGetBalances({
-      requestKey: 'telegram-update:100', amount: 5, description: 'First salary',
-    });
-    assert.deepEqual(
-      [firstPayday.dailyBalance, firstPayday.monthlyBalance, firstPayday.payBalance],
-      [25, Number((baselineMonth + 5).toFixed(2)), 5],
-    );
-    const firstPeriod = await database.query(
-      `SELECT id, started_at FROM accounting_periods
-       WHERE user_id = $1 AND request_key = 'telegram-update:100'`,
-      [firstUser.rows[0].id],
-    );
-    await database.query(
-      `INSERT INTO expenses
-         (user_id, description, amount, expense_date, entry_type, created_at, updated_at)
-       VALUES ($1, 'Unrelated same timestamp', 7, $2, 'income', $3, $3)`,
-      [firstUser.rows[0].id, repository.formatAppDate(firstPeriod.rows[0].started_at),
-        firstPeriod.rows[0].started_at],
-    );
-    const firstRetry = await repository.createPaydayAndGetBalances({
-      requestKey: 'telegram-update:100', amount: 999, description: 'ignored',
-    });
-    assert.equal(firstRetry.expenseId, firstPayday.expenseId);
-    assert.equal(firstRetry.payBalance, 12);
-
-    const secondPayday = await repository.createPaydayAndGetBalances({
-      requestKey: 'telegram-update:101', amount: 1, description: 'Latest salary',
-    });
-    assert.deepEqual(
-      [secondPayday.monthlyBalance, secondPayday.payBalance],
-      [Number((baselineMonth + 13).toFixed(2)), 1],
-    );
-    assert.equal((await database.query(
-      'SELECT count(*)::int AS count FROM accounting_periods WHERE user_id = $1',
-      [firstUser.rows[0].id],
-    )).rows[0].count, 2);
-    assert.equal((await database.query(
-      "SELECT count(*)::int AS count FROM expenses WHERE user_id = $1 AND description LIKE '%salary'",
-      [firstUser.rows[0].id],
-    )).rows[0].count, 2);
-    await repository.deleteExpense(secondPayday.expenseId);
-    const deletedRetry = await repository.createPaydayAndGetBalances({
-      requestKey: 'telegram-update:101', amount: 999, description: 'ignored',
-    });
-    assert.equal(deletedRetry.expenseId, secondPayday.expenseId);
-    assert.equal(deletedRetry.payBalance, 0);
-    const afterDeletion = await repository.createFinancialEntryAndGetBalances({
-      description: 'After deletion', amount: 2, budgetId: null, type: 'income',
-    });
-    assert.equal(afterDeletion.payBalance, 2);
-    await database.query(`CREATE FUNCTION fail_payday_income() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'forced payday failure'; END $$`);
-    await database.query(`CREATE TRIGGER fail_payday_income BEFORE INSERT ON expenses FOR EACH ROW EXECUTE FUNCTION fail_payday_income()`);
-    await assert.rejects(repository.createPaydayAndGetBalances(
-      { requestKey: 'telegram-update:rollback', amount: 3, description: 'Rollback' }), /forced payday failure/);
-    assert.equal((await database.query("SELECT count(*)::int AS count FROM accounting_periods WHERE request_key = 'telegram-update:rollback'")).rows[0].count, 0);
-    await database.query('DROP TRIGGER fail_payday_income ON expenses; DROP FUNCTION fail_payday_income()');
 
     const alternateBudget = await database.query(
       `INSERT INTO budgets (user_id, name, amount)

@@ -10,8 +10,7 @@ import {
 } from "./categoryResponses.js";
 import {
   findBudgetId,
-  createFinancialEntryAndGetBalances,
-  createPaydayAndGetBalances,
+  createExpenseAndGetTotalToday,
   getBudgets,
   getMonthlyExpenses,
   getMonthlyExpenseDetails,
@@ -146,62 +145,18 @@ export function registerCompleteSummaryHandler(composer, dependencies) {
   );
 }
 
-function balanceReply({ dailyBalance, monthlyBalance, payBalance }) {
-  return `Saldo diario: $${formatMoney(dailyBalance)}\nSaldo del mes: $${formatMoney(monthlyBalance)}` +
-    `\nSaldo desde cobro: $${formatMoney(payBalance)}`;
-}
-
-export function registerNewPeriodHandler(composer, { ownerId = OWNER_ID } = {}) {
-  return composer.command("nuevo_mes", (ctx) => {
-    if (ctx.from?.id !== ownerId) return ctx.reply("Unauthorized");
-    return ctx.reply("Usá /cobre <monto> <detalle> para registrar el cobro.");
-  });
-}
-
-export function registerPaydayHandler(composer, {
-  ownerId = OWNER_ID,
-  collectPayday = createPaydayAndGetBalances,
-} = {}) {
-  return composer.command("cobre", async (ctx) => {
-    if (ctx.from?.id !== ownerId) return ctx.reply("Unauthorized");
-    const [amountToken = "", ...descriptionParts] = ctx.match.trim().split(/\s+/);
-    const amount = Number(amountToken);
-    const description = descriptionParts.join(" ");
-    if (!/^\+?(?:\d+(?:\.\d+)?|\.\d+)$/.test(amountToken) ||
-        !Number.isFinite(amount) || amount <= 0 || roundMoney(amount) <= 0 || !description) {
-      return ctx.reply("Usá /cobre <monto positivo> <detalle>.");
-    }
-    const updateId = ctx.update?.update_id;
-    if (!Number.isSafeInteger(updateId)) {
-      return ctx.reply("No pude identificar el comando. Probá de nuevo.");
-    }
-    const requestKey = `telegram-update:${updateId}`;
-    let result;
-    try {
-      result = await collectPayday({ requestKey, amount: roundMoney(amount), description });
-    } catch {
-      return ctx.reply("No pude registrar el cobro. Probá de nuevo.");
-    }
-    return ctx.reply(balanceReply(result));
-  });
-}
-
 bot.use((ctx, next) => {
   if (ctx.from?.id !== OWNER_ID) return ctx.reply("Unauthorized");
   return next();
 });
 registerExpenseActionHandlers(bot);
-registerNewPeriodHandler(bot);
-registerPaydayHandler(bot);
 
 bot.command("help", async (ctx) => {
   return ctx.reply(
     `Available commands:\n\n` +
       `*Log expense*\n` +
-      `amount description (preferred)\n` +
-      `description amount [category]\n\n` +
-      `*Log income*\n` +
-      `/cobre <amount> <description> — payday (preferred); +amount — manual income\n\n` +
+      `description amount\n` +
+      `description amount category\n\n` +
       `*Queries*\n` +
       `/balance <category> — remaining balance for a category\n` +
       `/budget <category> — how much you can spend per day\n` +
@@ -211,7 +166,6 @@ bot.command("help", async (ctx) => {
       `/target [amount] — show or set the recurring daily target\n` +
       `/categories — available categories\n\n` +
       `*Management*\n` +
-      `/nuevo_mes — guidance for the payday command\n` +
       `/new <name> <amount> — create a new category`,
     { parse_mode: "Markdown" },
   );
@@ -311,91 +265,95 @@ export async function handleExpenseMessage(ctx, {
   getBudgets: readBudgets = getBudgets,
   inferCategory: categorize = inferCategory,
   selectTopCandidate: selectCandidate = selectTopCandidate,
-  createFinancialEntryAndGetBalances: writeEntry = createFinancialEntryAndGetBalances,
+  createExpenseAndGetTotalToday: writeExpense = createExpenseAndGetTotalToday,
   reportOperation = defaultOperationReporter,
 } = {}) {
   try {
-    if (/^\/[A-Za-z0-9_]+(?:@[A-Za-z0-9_]+)?(?:\s|$)/.test(ctx.message.text)) {
-      return ctx.reply("Unknown command.");
-    }
     const parsed = parseMessage(ctx.message.text);
     const { description, category } = parsed;
     const amount = roundMoney(parsed.amount);
-    const type = parsed.type ?? "expense";
-    let budgetId = null;
 
-    if (type === "expense") {
-      if (category) {
-        budgetId = await readBudgetId(category);
-        if (!budgetId) {
-          return ctx.reply(
-            `Categoría '${category}' no encontrada. Revisá /categories.`,
-          );
-        }
+    let budgetId;
+    let inferredCategoryName = null;
+
+    if (category) {
+      budgetId = await readBudgetId(category);
+      if (!budgetId) {
+        return ctx.reply(
+          `Categoría '${category}' no encontrada. Revisá /categories.`,
+        );
+      }
+    } else {
+      const fingerprint = fingerprintDescription(description);
+      let learnedBudget;
+      try {
+        learnedBudget = await readLearnedBudget(fingerprint);
+      } catch {
+        await reportFailure(reportOperation, "learned_lookup");
+        return ctx.reply(GENERIC_SAFE_CATEGORY_RESPONSE);
+      }
+      if (learnedBudget) {
+        budgetId = learnedBudget.id;
+        inferredCategoryName = learnedBudget.name;
       } else {
-        const fingerprint = fingerprintDescription(description);
-        let learnedBudget;
+        const budgets = await readBudgets();
+        let candidates;
         try {
-          learnedBudget = await readLearnedBudget(fingerprint);
+          candidates = await categorize({ description, amount, budgets });
         } catch {
-          await reportFailure(reportOperation, "learned_lookup");
+          await reportFailure(reportOperation, "provider_lookup");
           return ctx.reply(GENERIC_SAFE_CATEGORY_RESPONSE);
         }
-        if (learnedBudget) {
-          budgetId = learnedBudget.id;
-        } else {
-          const budgets = await readBudgets();
-          let candidates;
-          try {
-            candidates = await categorize({ description, amount, budgets });
-          } catch {
-            await reportFailure(reportOperation, "provider_lookup");
-            return ctx.reply(GENERIC_SAFE_CATEGORY_RESPONSE);
-          }
 
-          const candidate = selectCandidate(candidates);
-          if (!candidate) {
-            return ctx.reply(buildLowConfidenceReply({
-              originalText: ctx.message.text,
-              candidates,
-            }));
-          }
-          budgetId = candidate.budgetId;
+        const candidate = selectCandidate(candidates);
+        if (!candidate) {
+          return ctx.reply(buildLowConfidenceReply({
+            originalText: ctx.message.text,
+            candidates,
+          }));
         }
+        budgetId = candidate.budgetId;
+        inferredCategoryName = candidate.categoryName;
       }
     }
 
-    let result;
+    let expenseId;
+    let totalToday;
     try {
-      result = await writeEntry({ description, amount, budgetId, type });
+      ({ expenseId, totalToday } = await writeExpense({
+        description,
+        amount,
+        budgetId,
+      }));
     } catch {
       await reportFailure(reportOperation, "expense_write");
       return ctx.reply("Something went wrong, try again.");
     }
-    const buttons = type === "income"
-      ? [{
-        text: "Eliminar",
-        callback_data: encodeExpenseCallback("delete", result.expenseId),
-      }]
-      : [
-        {
-          text: "Cambiar",
-          callback_data: encodeExpenseCallback("recategorize", result.expenseId),
+    const categoryLine = inferredCategoryName
+      ? `\nCategoría: ${inferredCategoryName}`
+      : "";
+    return ctx.reply(
+      `Cargado ✓${categoryLine}\nLlevás $${formatMoney(totalToday)} hoy`,
+      {
+        reply_markup: {
+          inline_keyboard: [[
+            {
+              text: "Cambiar",
+              callback_data: encodeExpenseCallback("recategorize", expenseId),
+            },
+            {
+              text: "Eliminar",
+              callback_data: encodeExpenseCallback("delete", expenseId),
+            },
+          ]],
         },
-        {
-          text: "Eliminar",
-          callback_data: encodeExpenseCallback("delete", result.expenseId),
-        },
-      ];
-    return ctx.reply(balanceReply(result), {
-      reply_markup: { inline_keyboard: [buttons] },
-    });
+      },
+    );
   } catch (err) {
     if (
       err.message.startsWith("Format:") ||
       err.message.startsWith("Use:") ||
-      err.message.includes("is not a valid amount") ||
-      err.message === "Income amount must round to at least $0.01."
+      err.message.includes("is not a valid amount")
     ) {
       return ctx.reply(err.message);
     }
