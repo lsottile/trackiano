@@ -17,9 +17,9 @@ test('rejects invalid, non-positive, and non-finite targets', () => {
   }
 });
 
-test('rejects an invalid target before any Notion call', async () => {
+test('rejects an invalid target before any storage call', async () => {
   const replies = [];
-  let notionCalls = 0;
+  let storageCalls = 0;
   const ctx = {
     match: 'Infinity',
     reply(message) {
@@ -30,14 +30,14 @@ test('rejects an invalid target before any Notion call', async () => {
 
   await handleTargetCommand(ctx, {
     getSettings: async () => {
-      notionCalls += 1;
+      storageCalls += 1;
     },
     setDailyTarget: async () => {
-      notionCalls += 1;
+      storageCalls += 1;
     },
   });
 
-  assert.equal(notionCalls, 0);
+  assert.equal(storageCalls, 0);
   assert.deepEqual(replies, ['Target must be a positive number.']);
 });
 

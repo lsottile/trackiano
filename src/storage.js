@@ -1,7 +1,6 @@
-import * as notionRepository from './notion.js';
 import { createDefaultPostgresRepository } from './postgres.js';
 
-const BASE_METHODS = [
+const STORAGE_METHODS = [
   'findBudgetId',
   'getBudgets',
   'getPeriodSpent',
@@ -20,29 +19,14 @@ const BASE_METHODS = [
   'deleteExpense',
   'updateExpenseBudget',
   'createExpense',
-];
-
-const POSTGRES_FEATURE_METHODS = [
   'findLearnedBudget',
   'recategorizeExpenseAndLearn',
 ];
 
-export function createStorage({
-  backend = 'notion',
-  notionRepository: notion = notionRepository,
-  postgresRepository,
-} = {}) {
-  if (!['notion', 'postgres'].includes(backend)) {
-    throw new Error(`Unknown STORAGE_BACKEND: ${backend}`);
-  }
-  const repository = backend === 'notion'
-    ? notion
-    : (postgresRepository ?? createDefaultPostgresRepository());
-  const methods = backend === 'postgres'
-    ? [...BASE_METHODS, ...POSTGRES_FEATURE_METHODS]
-    : BASE_METHODS;
+export function createStorage({ postgresRepository } = {}) {
+  const repository = postgresRepository ?? createDefaultPostgresRepository();
 
-  return Object.fromEntries(methods.map((method) => [
+  return Object.fromEntries(STORAGE_METHODS.map((method) => [
     method,
     (...args) => repository[method](...args),
   ]));
@@ -50,10 +34,7 @@ export function createStorage({
 
 let applicationStorage;
 function callApplicationStorage(method, args) {
-  applicationStorage ??= createStorage({
-    backend: 'postgres',
-    postgresRepository: createDefaultPostgresRepository(),
-  });
+  applicationStorage ??= createStorage();
   return applicationStorage[method](...args);
 }
 
