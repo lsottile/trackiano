@@ -94,7 +94,7 @@ test('logs a Telegram expense rounded to cents with exact action buttons', async
   const replies = [];
   const writes = [];
   await handleExpenseMessage({
-    message: { text: 'coffee 10.005 Food' },
+    message: { text: '10.005 coffee | Food' },
     reply: async (...args) => replies.push(args),
   }, {
     findBudgetId: async () => '11111111-1111-1111-1111-111111111111',
@@ -153,18 +153,18 @@ test('recategorizes the exact Telegram expense through inline category buttons',
   assert.equal(replies[1][0], 'Categoría actualizada a Inversiones ✓');
 });
 
-test('returns safe delimiter guidance for ambiguous numeric category suffixes', async () => {
+test('returns safe delimiter guidance for malformed delimited input', async () => {
   const replies = [];
   await handleExpenseMessage({
-    message: { text: 'snack 5 Category 2' },
+    message: { text: '5 snack | Category 2 |' },
     reply: async (message) => replies.push(message),
   });
-  assert.deepEqual(replies, ['Use: {description} {amount} | {category}']);
+  assert.deepEqual(replies, ['Use: {amount} {description} | {category}']);
 });
 
 test('explicit category skips learned lookup and provider inference', async () => {
   const calls = [];
-  await handleExpenseMessage({ message: { text: 'hotel 50 Travel and Lodging' }, reply: async () => {} }, {
+  await handleExpenseMessage({ message: { text: '50 hotel | Travel and Lodging' }, reply: async () => {} }, {
     findBudgetId: async (name) => { calls.push(`explicit:${name}`); return 'travel-id'; },
     findLearnedBudget: async () => calls.push('learned'),
     inferCategory: async () => calls.push('provider'),
@@ -179,7 +179,7 @@ test('explicit category skips learned lookup and provider inference', async () =
 test('learned hit skips provider and uses the shared success reply', async () => {
   const calls = [];
   const replies = [];
-  await handleExpenseMessage({ message: { text: '  Coffee\tShop 10' }, reply: async (...args) => replies.push(args) }, {
+  await handleExpenseMessage({ message: { text: '  10\tCoffee Shop' }, reply: async (...args) => replies.push(args) }, {
     findLearnedBudget: async (fingerprint) => { calls.push(`learned:${fingerprint}`); return { id: 'food-id', name: 'Food' }; },
     getBudgets: async () => { calls.push('budgets'); return []; },
     inferCategory: async () => { calls.push('provider'); return []; },
@@ -195,7 +195,7 @@ test('learned hit skips provider and uses the shared success reply', async () =>
 
 test('learned miss falls through to one ranked provider call and writes the top accepted ID', async () => {
   const calls = [];
-  await handleExpenseMessage({ message: { text: 'train 20' }, reply: async () => {} }, {
+  await handleExpenseMessage({ message: { text: '20 train' }, reply: async () => {} }, {
     findLearnedBudget: async () => { calls.push('learned'); return null; },
     getBudgets: async () => { calls.push('budgets'); return [{ id: 'transport-id', name: 'Transport' }]; },
     inferCategory: async () => { calls.push('provider'); return [{ budgetId: 'transport-id', categoryName: 'Transport', confidence: 0.7, reason: 'hidden' }]; },
@@ -213,7 +213,7 @@ test('default failure reporter emits only an exact structured coarse event', asy
   console.error = (message) => output.push(message);
   try {
     await handleExpenseMessage({
-      message: { text: 'sensitive description 10' },
+      message: { text: '10 sensitive description' },
       reply: async () => {},
     }, {
       findLearnedBudget: async () => { throw new Error('secret'); },
@@ -250,7 +250,7 @@ test('reports only coarse failure enums and ignores reporter failures', async ()
     const reports = [];
     const replies = [];
     await handleExpenseMessage({
-      message: { text: 'sensitive description 10' },
+      message: { text: '10 sensitive description' },
       reply: async (message) => replies.push(message),
     }, {
       ...dependencies,
@@ -302,7 +302,7 @@ test('low confidence and provider failures reply safely without an expense write
   ]) {
     const replies = [];
     let writes = 0;
-    await handleExpenseMessage({ message: { text: 'hotel 50' }, reply: async (message) => replies.push(message) }, {
+    await handleExpenseMessage({ message: { text: '50 hotel' }, reply: async (message) => replies.push(message) }, {
       findLearnedBudget: async () => null,
       getBudgets: async () => [{ id: 'one', name: 'Travel and Lodging' }, { id: 'two', name: 'Travel' }],
       inferCategory: provider,

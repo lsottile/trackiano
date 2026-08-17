@@ -155,8 +155,8 @@ bot.command("help", async (ctx) => {
   return ctx.reply(
     `Available commands:\n\n` +
       `*Log expense*\n` +
-      `description amount\n` +
-      `description amount category\n\n` +
+      `amount description\n` +
+      `amount description | category\n\n` +
       `*Queries*\n` +
       `/balance <category> — remaining balance for a category\n` +
       `/budget <category> — how much you can spend per day\n` +
