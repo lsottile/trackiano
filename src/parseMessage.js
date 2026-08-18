@@ -6,6 +6,10 @@ function isFiniteDecimal(token) {
   return DECIMAL.test(token) && Number.isFinite(Number(token));
 }
 
+function capitalizeFirst(text) {
+  return text.length ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+}
+
 export function parseMessage(text) {
   const parts = text.trim().split('|');
   if (parts.length > 2) throw new Error(DELIMITED_FORMAT);
@@ -18,7 +22,7 @@ export function parseMessage(text) {
   if (!isFiniteDecimal(amountToken)) {
     throw new Error(`"${amountToken}" is not a valid amount`);
   }
-  const description = descriptionTokens.join(' ');
+  const description = capitalizeFirst(descriptionTokens.join(' '));
 
   if (parts.length === 2) {
     const category = parts[1].trim();

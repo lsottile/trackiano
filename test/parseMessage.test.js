@@ -5,7 +5,7 @@ import { parseMessage } from '../src/parseMessage.js';
 
 test('parses amount first with explicit delimited category', () => {
   assert.deepEqual(parseMessage('50 coffee | food'), {
-    description: 'coffee',
+    description: 'Coffee',
     amount: 50,
     category: 'food',
   });
@@ -13,7 +13,7 @@ test('parses amount first with explicit delimited category', () => {
 
 test('parses amount first with omitted category', () => {
   assert.deepEqual(parseMessage('50 coffee with milk'), {
-    description: 'coffee with milk',
+    description: 'Coffee with milk',
     amount: 50,
     category: null,
   });
@@ -50,19 +50,19 @@ test('accepts only explicit finite decimal amount syntax', () => {
 
 test('keeps later numeric tokens inside the description', () => {
   assert.deepEqual(parseMessage('5 snack 2'), {
-    description: 'snack 2', amount: 5, category: null,
+    description: 'Snack 2', amount: 5, category: null,
   });
   assert.deepEqual(parseMessage('20 subte linea D'), {
-    description: 'subte linea D', amount: 20, category: null,
+    description: 'Subte linea D', amount: 20, category: null,
   });
 });
 
 test('uses a literal delimiter for numeric-suffixed or multi-word categories', () => {
   assert.deepEqual(parseMessage('5 snack | Category 2'), {
-    description: 'snack', amount: 5, category: 'Category 2',
+    description: 'Snack', amount: 5, category: 'Category 2',
   });
   assert.deepEqual(parseMessage('50 hotel | Travel and Lodging'), {
-    description: 'hotel', amount: 50, category: 'Travel and Lodging',
+    description: 'Hotel', amount: 50, category: 'Travel and Lodging',
   });
   for (const input of ['50 hotel |', '| Travel', '50 | Travel', '50 hotel | Travel | Other']) {
     assert.throws(() => parseMessage(input), /Use:/);
