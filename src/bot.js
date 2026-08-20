@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { pathToFileURL } from "node:url";
-import { Bot, Composer } from "grammy";
+import { Api, Bot, Composer } from "grammy";
 import { inferCategory, selectTopCandidate } from "./inferCategory.js";
 import { parseMessage } from "./parseMessage.js";
 import { fingerprintDescription } from "./descriptionFingerprint.js";
@@ -20,6 +20,11 @@ import {
   deleteExpense,
   findLearnedBudget,
   recategorizeExpenseAndLearn,
+  createExpenseIfNew,
+  getPendingIngestion,
+  getPendingIngestionsByMerchant,
+  markPendingIngestionProcessed,
+  saveMerchantMapping,
 } from "./storage.js";
 import { formatMoney, roundMoney } from "./money.js";
 import { getPeriodStart, daysUntilPayday } from "./pay.js";
@@ -39,7 +44,7 @@ function defaultOperationReporter({ operation }) {
   console.error(JSON.stringify({ operation, outcome: "failure" }));
 }
 
-async function reportFailure(reporter, operation) {
+export async function reportFailure(reporter, operation) {
   try {
     await reporter({ operation, outcome: "failure" });
   } catch {
@@ -78,6 +83,105 @@ export function decodeExpenseCallback(data) {
   const budgetId = budget ? decodeId(budget) : null;
   if (!expenseId || (budget && !budgetId)) return null;
   return { action, expenseId, budgetId };
+}
+
+export function encodeMerchantCallback(action, sourceId, budgetId) {
+  return ["tm", action, encodeId(sourceId), budgetId && encodeId(budgetId)]
+    .filter(Boolean)
+    .join(".");
+}
+
+export function decodeMerchantCallback(data) {
+  const [prefix, action, source, budget, ...extra] = data.split(".");
+  if (
+    prefix !== "tm" ||
+    action !== "select" ||
+    extra.length ||
+    !source
+  ) return null;
+  const sourceId = decodeId(source);
+  const budgetId = budget ? decodeId(budget) : null;
+  if (!sourceId || (budget && !budgetId)) return null;
+  return { action, sourceId, budgetId };
+}
+
+export function createMerchantSelectionPromptSender({
+  ownerId = OWNER_ID,
+  getBudgets: readBudgets = getBudgets,
+  sendMessage = (...args) => new Api(process.env.TELEGRAM_TOKEN).sendMessage(...args),
+} = {}) {
+  return async (pending) => {
+    const budgets = await readBudgets();
+    return sendMessage(ownerId, `Select a category for ${pending.merchant}:`, {
+      reply_markup: {
+        inline_keyboard: budgets.map((budget) => [{
+          text: budget.name,
+          callback_data: encodeMerchantCallback("select", pending.id, budget.id),
+        }]),
+      },
+    });
+  };
+}
+
+export async function processPendingMerchant(merchant, budgetId, dependencies) {
+  await dependencies.saveMerchantMapping(merchant, budgetId);
+  const rows = await dependencies.getPendingIngestionsByMerchant(merchant);
+  let created = 0;
+  let duplicates = 0;
+  for (const row of rows) {
+    const { created: didCreate } = await dependencies.createExpenseIfNew({
+      description: row.description,
+      amount: row.amount,
+      budgetId,
+      ingestId: row.ingestId,
+      now: row.createdAt,
+    });
+    if (didCreate) created += 1;
+    else duplicates += 1;
+    await dependencies.markPendingIngestionProcessed(row.id);
+  }
+  return { created, duplicates };
+}
+
+export function registerMerchantMappingHandlers(composer, {
+  getPendingIngestion: readPendingIngestion = getPendingIngestion,
+  getBudgets: readBudgets = getBudgets,
+  processPendingMerchant: process = processPendingMerchant,
+  saveMerchantMapping: saveMapping = saveMerchantMapping,
+  getPendingIngestionsByMerchant: readPendingIngestions = getPendingIngestionsByMerchant,
+  createExpenseIfNew: writeExpense = createExpenseIfNew,
+  markPendingIngestionProcessed: markProcessed = markPendingIngestionProcessed,
+  reportOperation = defaultOperationReporter,
+} = {}) {
+  return composer.on("callback_query:data", async (ctx, next) => {
+    const callback = decodeMerchantCallback(ctx.callbackQuery.data);
+    if (!callback || callback.action !== "select") return next();
+    await ctx.answerCallbackQuery?.();
+
+    const [pending, budgets] = await Promise.all([
+      readPendingIngestion(callback.sourceId),
+      readBudgets(),
+    ]);
+    const budget = budgets.find((item) => item.id === callback.budgetId);
+    if (!pending || pending.status !== "pending" || !budget) {
+      return ctx.reply("This pending purchase or budget is no longer available.");
+    }
+
+    try {
+      const result = await process(pending.merchant, budget.id, {
+        saveMerchantMapping: saveMapping,
+        getPendingIngestionsByMerchant: readPendingIngestions,
+        createExpenseIfNew: writeExpense,
+        markPendingIngestionProcessed: markProcessed,
+      });
+      return ctx.reply(
+        `Mapped ${pending.merchant}; processed ${result.created + result.duplicates} pending purchase(s).`,
+      );
+    } catch {
+      await reportFailure(reportOperation, "pending_merchant_processing");
+      return ctx.reply("Failed to process pending purchases. Please try again.");
+    }
+  });
 }
 
 export function registerExpenseActionHandlers(composer, {
@@ -150,6 +254,7 @@ bot.use((ctx, next) => {
   return next();
 });
 registerExpenseActionHandlers(bot);
+registerMerchantMappingHandlers(bot);
 
 bot.command("help", async (ctx) => {
   return ctx.reply(
