@@ -3,12 +3,17 @@ import test from 'node:test';
 import { Composer } from 'grammy';
 
 import {
+  createMerchantSelectionPromptSender,
   decodeExpenseCallback,
+  decodeMerchantCallback,
   encodeExpenseCallback,
+  encodeMerchantCallback,
   handleBudget,
   handleExpenseMessage,
+  processPendingMerchant,
   registerCompleteSummaryHandler,
   registerExpenseActionHandlers,
+  registerMerchantMappingHandlers,
   startBot,
 } from '../src/bot.js';
 
@@ -334,4 +339,271 @@ test('deletes the exact Telegram expense through its inline button', async () =>
 
   assert.deepEqual(deleted, [expenseId]);
   assert.deepEqual(replies, ['Gasto eliminado ✓']);
+});
+
+test('encodes merchant callback data below Telegrams 64-byte limit', () => {
+  const data = encodeMerchantCallback(
+    'select',
+    '11111111-1111-1111-1111-111111111111',
+    '22222222-2222-2222-2222-222222222222',
+  );
+  assert.ok(Buffer.byteLength(data) <= 64);
+  assert.deepEqual(decodeMerchantCallback(data), {
+    action: 'select',
+    sourceId: '11111111-1111-1111-1111-111111111111',
+    budgetId: '22222222-2222-2222-2222-222222222222',
+  });
+});
+
+test('rejects malformed merchant callback data', () => {
+  assert.equal(decodeMerchantCallback('tm.select.not-a-uuid'), null);
+  assert.equal(decodeMerchantCallback(encodeMerchantCallback(
+    'review',
+    '11111111-1111-1111-1111-111111111111',
+    '22222222-2222-2222-2222-222222222222',
+  )), null);
+});
+
+test('renders an unknown merchant prompt from all current live budgets', async () => {
+  const sent = [];
+  const prompt = createMerchantSelectionPromptSender({
+    ownerId: 42,
+    getBudgets: async () => [
+      { id: '11111111-1111-1111-1111-111111111111', name: 'Coffee & Snacks' },
+      { id: '22222222-2222-2222-2222-222222222222', name: 'Entertainment' },
+      { id: '33333333-3333-3333-3333-333333333333', name: 'Restaurants' },
+    ],
+    sendMessage: async (...args) => { sent.push(args); },
+  });
+
+  await prompt({
+    id: '44444444-4444-4444-4444-444444444444',
+    merchant: 'ARTISTA DE CAFE',
+    status: 'pending',
+  });
+
+  assert.match(sent[0][1], /ARTISTA DE CAFE/);
+  assert.deepEqual(
+    sent[0][2].reply_markup.inline_keyboard.flat().map((button) => button.text),
+    ['Coffee & Snacks', 'Entertainment', 'Restaurants'],
+  );
+});
+
+test('saves the mapping before processing every pending purchase for that merchant', async () => {
+  const events = [];
+  const result = await processPendingMerchant('ARTISTA DE CAFE', 'coffee', {
+    saveMerchantMapping: async () => { events.push('mapping'); },
+    getPendingIngestionsByMerchant: async () => [
+      { id: 'pending-1', ingestId: 'takenos:1', description: 'Artista de Cafe', amount: 10 },
+      { id: 'pending-2', ingestId: 'takenos:2', description: 'ARTISTA DE CAFE', amount: 20 },
+    ],
+    createExpenseIfNew: async (expense) => {
+      events.push(`expense:${expense.ingestId}`);
+      return {
+        created: expense.ingestId === 'takenos:1',
+        expenseId: expense.ingestId === 'takenos:1' ? 'expense-1' : null,
+      };
+    },
+    markPendingIngestionProcessed: async (id) => { events.push(`processed:${id}`); },
+  });
+  assert.deepEqual(events, [
+    'mapping', 'expense:takenos:1', 'processed:pending-1',
+    'expense:takenos:2', 'processed:pending-2',
+  ]);
+  assert.deepEqual(result, { created: 1, duplicates: 1 });
+});
+
+test('books a pending purchase on its original purchase date', async () => {
+  const purchaseDate = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+  const written = [];
+  await processPendingMerchant('ARTISTA DE CAFE', 'coffee', {
+    saveMerchantMapping: async () => {},
+    getPendingIngestionsByMerchant: async () => [
+      { id: 'pending-1', ingestId: 'takenos:1', description: 'Artista', amount: 10, createdAt: purchaseDate },
+    ],
+    createExpenseIfNew: async (expense) => {
+      written.push(expense);
+      return { created: true, expenseId: 'expense-1' };
+    },
+    markPendingIngestionProcessed: async () => {},
+  });
+  assert.equal(written.length, 1);
+  assert.equal(written[0].now, purchaseDate);
+});
+
+test('leaves a row pending if its expense write fails', async () => {
+  let marked = false;
+  await assert.rejects(processPendingMerchant('ARTISTA DE CAFE', 'coffee', {
+    saveMerchantMapping: async () => {},
+    getPendingIngestionsByMerchant: async () => [
+      { id: 'pending-1', ingestId: 'takenos:1', description: 'Artista', amount: 10 },
+    ],
+    createExpenseIfNew: async () => { throw new Error('Storage unavailable'); },
+    markPendingIngestionProcessed: async () => { marked = true; },
+  }), /Storage unavailable/);
+  assert.equal(marked, false);
+});
+
+test('selects a live budget and processes the pending merchant end-to-end', async () => {
+  const replies = [];
+  const events = [];
+  const composer = new Composer();
+  registerMerchantMappingHandlers(composer, {
+    getPendingIngestion: async () => ({
+      id: '11111111-1111-1111-1111-111111111111',
+      merchant: 'ARTISTA DE CAFE',
+      status: 'pending',
+    }),
+    getBudgets: async () => [
+      { id: '22222222-2222-2222-2222-222222222222', name: 'Coffee & Snacks' },
+      { id: '33333333-3333-3333-3333-333333333333', name: 'Entertainment' },
+    ],
+    saveMerchantMapping: async (merchant, budgetId) => {
+      events.push(`mapping:${merchant}:${budgetId}`);
+    },
+    getPendingIngestionsByMerchant: async () => [
+      { id: 'pending-1', ingestId: 'takenos:1', description: 'Artista de Cafe', amount: 10 },
+    ],
+    createExpenseIfNew: async (expense) => {
+      events.push(`expense:${expense.ingestId}`);
+      return { created: true, expenseId: 'expense-1' };
+    },
+    markPendingIngestionProcessed: async (id) => { events.push(`processed:${id}`); },
+  });
+  const callbackQuery = {
+    data: encodeMerchantCallback(
+      'select',
+      '11111111-1111-1111-1111-111111111111',
+      '33333333-3333-3333-3333-333333333333',
+    ),
+  };
+  await composer.middleware()({
+    update: { callback_query: callbackQuery },
+    callbackQuery,
+    answerCallbackQuery: async () => {},
+    reply: async (text) => replies.push(text),
+  }, () => assert.fail('select callback must short-circuit'));
+  assert.deepEqual(events, [
+    'mapping:ARTISTA DE CAFE:33333333-3333-3333-3333-333333333333',
+    'expense:takenos:1',
+    'processed:pending-1',
+  ]);
+  assert.match(replies[0], /Mapped ARTISTA DE CAFE; processed 1 pending purchase\(s\)\./);
+});
+
+test('rejects a stale selected budget without changing mapping or pending rows', async () => {
+  const replies = [];
+  const composer = new Composer();
+  registerMerchantMappingHandlers(composer, {
+    getPendingIngestion: async () => ({
+      id: '11111111-1111-1111-1111-111111111111',
+      merchant: 'ARTISTA DE CAFE',
+      status: 'pending',
+    }),
+    getBudgets: async () => [{
+      id: '22222222-2222-2222-2222-222222222222', name: 'Coffee & Snacks',
+    }],
+    processPendingMerchant: async () => assert.fail('must not process stale budget'),
+  });
+  const callbackQuery = {
+    data: encodeMerchantCallback(
+      'select',
+      '11111111-1111-1111-1111-111111111111',
+      '33333333-3333-3333-3333-333333333333',
+    ),
+  };
+  await composer.middleware()({
+    update: { callback_query: callbackQuery },
+    callbackQuery,
+    answerCallbackQuery: async () => {},
+    reply: async (text) => replies.push(text),
+  }, () => {});
+  assert.match(replies[0], /no longer available/i);
+});
+
+test('rejects an already-processed pending row without writing again', async () => {
+  const replies = [];
+  const composer = new Composer();
+  registerMerchantMappingHandlers(composer, {
+    getPendingIngestion: async () => ({
+      id: '11111111-1111-1111-1111-111111111111',
+      merchant: 'ARTISTA DE CAFE',
+      status: 'processed',
+    }),
+    getBudgets: async () => [{
+      id: '22222222-2222-2222-2222-222222222222', name: 'Coffee & Snacks',
+    }],
+    processPendingMerchant: async () => assert.fail('must not reprocess a handled row'),
+  });
+  const callbackQuery = {
+    data: encodeMerchantCallback(
+      'select',
+      '11111111-1111-1111-1111-111111111111',
+      '22222222-2222-2222-2222-222222222222',
+    ),
+  };
+  await composer.middleware()({
+    update: { callback_query: callbackQuery },
+    callbackQuery,
+    answerCallbackQuery: async () => {},
+    reply: async (text) => replies.push(text),
+  }, () => {});
+  assert.match(replies[0], /no longer available/i);
+});
+
+test('reports pending merchant processing failures', async () => {
+  const replies = [];
+  const reports = [];
+  const composer = new Composer();
+  registerMerchantMappingHandlers(composer, {
+    getPendingIngestion: async () => ({
+      id: '11111111-1111-1111-1111-111111111111',
+      merchant: 'ARTISTA DE CAFE',
+      status: 'pending',
+    }),
+    getBudgets: async () => [{
+      id: '22222222-2222-2222-2222-222222222222', name: 'Coffee & Snacks',
+    }],
+    processPendingMerchant: async () => { throw new Error('Storage unavailable'); },
+    reportOperation: async (report) => { reports.push(report); },
+  });
+  const callbackQuery = {
+    data: encodeMerchantCallback(
+      'select',
+      '11111111-1111-1111-1111-111111111111',
+      '22222222-2222-2222-2222-222222222222',
+    ),
+  };
+  await composer.middleware()({
+    update: { callback_query: callbackQuery },
+    callbackQuery,
+    answerCallbackQuery: async () => {},
+    reply: async (text) => replies.push(text),
+  }, () => {});
+  assert.match(replies[0], /failed/i);
+  assert.deepEqual(reports, [{ operation: 'pending_merchant_processing', outcome: 'failure' }]);
+});
+
+test('a non-owner mapping callback replies Unauthorized before any storage access', async () => {
+  const replies = [];
+  const composer = new Composer();
+  composer.use((ctx, next) => {
+    if (ctx.from?.id !== 42) return ctx.reply('Unauthorized');
+    return next();
+  });
+  registerMerchantMappingHandlers(composer, {
+    getPendingIngestion: async () => assert.fail('must not read storage'),
+  });
+  await composer.middleware()({
+    callbackQuery: {
+      data: encodeMerchantCallback(
+        'select',
+        '11111111-1111-1111-1111-111111111111',
+        '22222222-2222-2222-2222-222222222222',
+      ),
+    },
+    from: { id: 7 },
+    reply: async (text) => replies.push(text),
+  }, () => assert.fail('authorization must short-circuit callback handlers'));
+  assert.deepEqual(replies, ['Unauthorized']);
 });

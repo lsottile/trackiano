@@ -35,8 +35,8 @@ When category is omitted, the bot normalizes the current description with NFKC, 
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `TELEGRAM_TOKEN` | ✓ | Telegram bot token |
-| `TELEGRAM_OWNER_ID` | ✓ | Your Telegram user ID (only you can use the bot) |
+| `TELEGRAM_TOKEN` | ✓ | Telegram bot token (also used by the Takenos ingestion service to prompt the owner) |
+| `TELEGRAM_OWNER_ID` | ✓ | Your Telegram user ID (only you can use the bot; also the ingestion prompt recipient) |
 | `STORAGE_BACKEND` | ✓ | Must be the exact value `postgres`; unset, case variants, and `notion` fail startup |
 | `DATABASE_URL` | PostgreSQL | PostgreSQL connection string |
 | `PGSSLMODE` | PostgreSQL | `require` with a trusted root, or `disable` only for disposable local/test databases |
@@ -51,6 +51,9 @@ When category is omitted, the bot normalizes the current description with NFKC, 
 | `APP_CURRENCY` | — | ISO currency stored during migration, defaults to `USD` |
 | `APP_TIMEZONE` | — | Timezone used for expense dates and daily totals, defaults to `UTC` |
 | `PAY_DATE_DAY` | — | Day of month for payday (defaults to last day of month) |
+| `INGEST_TOKEN` | Takenos ingestion | Bearer token required by the ingestion HTTP endpoint |
+| `TAKENOS_ANDROID_PACKAGE` | Takenos ingestion | Android package name accepted as the Takenos notification source |
+| `PORT` | — | HTTP port for the ingestion server, defaults to `3000` |
 
 ## Setup
 
@@ -70,6 +73,7 @@ The long-running bot and automatic summaries use separate Railway services:
 - Bot service: run `npm start` continuously.
 - Notification service: run `npm run notifications` as a Railway cron service.
 - Schedule the notification service periodically in UTC; every 15 minutes is recommended. The command checks calendar periods in `APP_TIMEZONE` and exits after each run.
+- Takenos ingestion service: run `node src/ingest.js` as a separate process. It exposes `POST /ingest/takenos` and requires public HTTP reachability from the device posting notifications, plus `INGEST_TOKEN` and `TAKENOS_ANDROID_PACKAGE`. It also needs `TELEGRAM_TOKEN` and `TELEGRAM_OWNER_ID` to deliver the merchant-selection prompt, and runs the same runtime preflight as the bot (`STORAGE_BACKEND`, `DATABASE_URL`, `PGSSLMODE`). Unknown merchants are persisted first and the owner is prompted in Telegram to pick a category; future purchases from a mapped merchant create expenses directly.
 
 ### Historical Notion rollback setup
 
@@ -110,9 +114,11 @@ explicit approval; normal tests do not mutate either remote environment.
 ## PostgreSQL migration
 
 PostgreSQL support is multi-user-ready but the current bot still binds every operation
-to `TELEGRAM_OWNER_ID`. Takenos is intentionally not part of this schema or migration.
-Money uses `NUMERIC(12,2)`, expense dates remain local calendar dates, and deleted
-expenses are retained with a soft-delete timestamp.
+to `TELEGRAM_OWNER_ID`. Takenos ingestion is part of this schema: migration
+`004_takenos_ingestion.sql` adds the expense `ingest_id` idempotency key plus the
+`merchant_mappings` and `pending_ingestions` tables. Money uses `NUMERIC(12,2)`,
+expense dates remain local calendar dates, and deleted expenses are retained with a
+soft-delete timestamp.
 
 Deploy migration-first: apply versioned schema migrations only after configuring an approved database and confirming backup/rollback readiness and migration-runner exclusivity. Migration `003_category_inference_rules.sql` is additive, performs no backfill, and retains learned rules independently of source expenses. Normal `npm test` skips the opt-in PostgreSQL integration scenario; `npm run test:postgres` fails unless `TEST_DATABASE_URL` is explicitly set.
 
