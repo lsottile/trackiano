@@ -7,7 +7,7 @@
     "node": ">=22 <23"
   },
   "scripts": {
-    "start": "node src/bot.js",
+    "start": "node ${SERVICE_ENTRY:-src/bot.js}",
     "notifications": "node src/notifications.js",
     "test": "node --test",
     "db:migrate": "node scripts/migrate-db.js",
