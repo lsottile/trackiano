@@ -51,7 +51,7 @@ test('returns only owner-scoped budgets and maps numeric money values', async ()
 test('creates a cent-rounded expense on the app-local calendar date', async () => {
   const database = fakeDatabase((sql, params) => {
     if (sql.startsWith('INSERT INTO expenses')) {
-      assert.deepEqual(params, [userId, budgetId, 'Coffee', 10.01, '2026-07-19']);
+      assert.deepEqual(params, [userId, budgetId, 'Coffee', 10.01, '2026-07-19', null]);
       return { rows: [{ id: expenseId }], rowCount: 1 };
     }
   });
@@ -236,4 +236,261 @@ test('groups active expenses by budget in a half-open date range', async () => {
     await repository.getExpensesInRange('2026-07-01', '2026-08-01'),
     { [budgetId]: 20.27 },
   );
+});
+
+test('finds the owner-scoped active merchant mapping or returns null on miss', async () => {
+  const database = fakeDatabase((sql, params) => {
+    if (sql.includes('FROM merchant_mappings')) {
+      assert.match(sql, /user_id = \$1 AND merchant = \$2 AND archived_at IS NULL/);
+      assert.deepEqual(params, [userId, 'ARTISTA DE CAFE']);
+      return { rows: [{ merchant: 'ARTISTA DE CAFE', budget_id: budgetId }], rowCount: 1 };
+    }
+  });
+  const repository = createPostgresRepository(database, { telegramUserId: 42 });
+
+  assert.deepEqual(await repository.findActiveMerchantMapping('ARTISTA DE CAFE'), {
+    merchant: 'ARTISTA DE CAFE',
+    budgetId,
+  });
+  const missing = createPostgresRepository(fakeDatabase(), { telegramUserId: 42 });
+  assert.equal(await missing.findActiveMerchantMapping('UNKNOWN'), null);
+});
+
+test('upserts the merchant mapping and unarchives it instead of creating a duplicate', async () => {
+  const database = fakeDatabase((sql, params) => {
+    if (sql.startsWith('INSERT INTO merchant_mappings')) {
+      assert.match(sql, /ON CONFLICT \(user_id, merchant\) DO UPDATE/);
+      assert.match(sql, /budget_id = EXCLUDED\.budget_id/);
+      assert.match(sql, /archived_at = NULL/);
+      assert.match(sql, /updated_at = now\(\)/);
+      assert.deepEqual(params, [userId, 'ARTISTA DE CAFE', budgetId]);
+      return { rows: [{ merchant: 'ARTISTA DE CAFE', budget_id: budgetId }], rowCount: 1 };
+    }
+  });
+  const repository = createPostgresRepository(database, { telegramUserId: 42 });
+
+  const saved = await repository.saveMerchantMapping('ARTISTA DE CAFE', budgetId);
+  const resaved = await repository.saveMerchantMapping('ARTISTA DE CAFE', budgetId);
+
+  assert.deepEqual(saved, { merchant: 'ARTISTA DE CAFE', budgetId });
+  assert.deepEqual(resaved, saved);
+  assert.equal(database.calls.filter(
+    ({ sql }) => sql.startsWith('INSERT INTO merchant_mappings'),
+  ).length, 2);
+});
+
+test('lists only the owners non-archived merchant mappings', async () => {
+  const database = fakeDatabase((sql, params) => {
+    if (sql.includes('FROM merchant_mappings')) {
+      assert.match(sql, /archived_at IS NULL/);
+      assert.deepEqual(params, [userId]);
+      return {
+        rows: [
+          { merchant: 'ARTISTA DE CAFE', budget_id: budgetId },
+          { merchant: 'PIZZA PLACE', budget_id: '44444444-4444-4444-4444-444444444444' },
+        ],
+        rowCount: 2,
+      };
+    }
+  });
+  const repository = createPostgresRepository(database, { telegramUserId: 42 });
+
+  assert.deepEqual(await repository.getActiveMerchantMappings(), [
+    { merchant: 'ARTISTA DE CAFE', budgetId },
+    { merchant: 'PIZZA PLACE', budgetId: '44444444-4444-4444-4444-444444444444' },
+  ]);
+});
+
+test('archives a merchant mapping by merchant key instead of by page id', async () => {
+  const database = fakeDatabase((sql, params) => {
+    if (sql.startsWith('UPDATE merchant_mappings')) {
+      assert.match(sql, /archived_at = now\(\)/);
+      assert.match(sql, /user_id = \$1 AND merchant = \$2 AND archived_at IS NULL/);
+      assert.deepEqual(params, [userId, 'ARTISTA DE CAFE']);
+      return { rows: [], rowCount: 1 };
+    }
+  });
+  const repository = createPostgresRepository(database, { telegramUserId: 42 });
+
+  await repository.archiveMerchantMapping('ARTISTA DE CAFE');
+});
+
+test('creates one pending ingestion per ingest id and returns the existing row on retry', async () => {
+  const pendingRow = {
+    id: '55555555-5555-5555-5555-555555555555',
+    ingest_id: 'takenos:42',
+    merchant: 'ARTISTA DE CAFE',
+    description: 'Artista de Cafe',
+    amount: '20.27',
+    status: 'pending',
+  };
+  let inserts = 0;
+  const database = fakeDatabase((sql, params) => {
+    if (sql.startsWith('INSERT INTO pending_ingestions')) {
+      inserts += 1;
+      assert.match(sql, /ON CONFLICT \(user_id, ingest_id\) DO NOTHING/);
+      assert.deepEqual(params, [userId, 'takenos:42', 'ARTISTA DE CAFE', 'Artista de Cafe', 20.27]);
+      return inserts === 1
+        ? { rows: [pendingRow], rowCount: 1 }
+        : { rows: [], rowCount: 0 };
+    }
+    if (sql.startsWith('SELECT id, ingest_id') && sql.includes('FROM pending_ingestions')) {
+      return { rows: [pendingRow], rowCount: 1 };
+    }
+  });
+  const repository = createPostgresRepository(database, { telegramUserId: 42 });
+  const pending = {
+    ingestId: 'takenos:42',
+    merchant: 'ARTISTA DE CAFE',
+    description: 'Artista de Cafe',
+    amount: 20.27,
+  };
+
+  const first = await repository.createPendingIngestionIfNew(pending);
+  const repeated = await repository.createPendingIngestionIfNew(pending);
+
+  assert.equal(first.created, true);
+  assert.equal(first.row.id, pendingRow.id);
+  assert.equal(first.row.amount, 20.27);
+  assert.equal(repeated.created, false);
+  assert.equal(repeated.row.id, pendingRow.id);
+  assert.equal(inserts, 2);
+});
+
+test('retrieves a pending ingestion by id and returns null when missing', async () => {
+  const createdAt = new Date('2026-07-19T10:00:00.000Z');
+  const database = fakeDatabase((sql, params) => {
+    if (sql.includes('FROM pending_ingestions')) {
+      assert.match(sql, /id = \$1 AND user_id = \$2/);
+      assert.match(sql, /created_at/);
+      if (params[0] === '55555555-5555-5555-5555-555555555555') {
+        return {
+          rows: [{
+            id: params[0],
+            ingest_id: 'takenos:42',
+            merchant: 'ARTISTA DE CAFE',
+            description: 'Artista de Cafe',
+            amount: '20.27',
+            status: 'pending',
+            created_at: createdAt,
+          }],
+          rowCount: 1,
+        };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+  });
+  const repository = createPostgresRepository(database, { telegramUserId: 42 });
+
+  const pending = await repository.getPendingIngestion('55555555-5555-5555-5555-555555555555');
+  const missing = await repository.getPendingIngestion('66666666-6666-6666-6666-666666666666');
+
+  assert.deepEqual(pending, {
+    id: '55555555-5555-5555-5555-555555555555',
+    ingestId: 'takenos:42',
+    merchant: 'ARTISTA DE CAFE',
+    description: 'Artista de Cafe',
+    amount: 20.27,
+    status: 'pending',
+    createdAt,
+  });
+  assert.equal(missing, null);
+});
+
+test('lists only pending ingestions for one merchant', async () => {
+  const database = fakeDatabase((sql, params) => {
+    if (sql.includes('FROM pending_ingestions')) {
+      assert.match(sql, /merchant = \$2 AND status = 'pending'/);
+      assert.deepEqual(params, [userId, 'ARTISTA DE CAFE']);
+      return {
+        rows: [
+          {
+            id: '55555555-5555-5555-5555-555555555555',
+            ingest_id: 'takenos:42',
+            merchant: 'ARTISTA DE CAFE',
+            description: 'Artista de Cafe',
+            amount: '20.27',
+            status: 'pending',
+          },
+        ],
+        rowCount: 1,
+      };
+    }
+  });
+  const repository = createPostgresRepository(database, { telegramUserId: 42 });
+
+  const rows = await repository.getPendingIngestionsByMerchant('ARTISTA DE CAFE');
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].ingestId, 'takenos:42');
+});
+
+test('marks a pending ingestion processed for the owner', async () => {
+  const database = fakeDatabase((sql, params) => {
+    if (sql.startsWith('UPDATE pending_ingestions')) {
+      assert.match(sql, /status = 'processed'/);
+      assert.match(sql, /id = \$1 AND user_id = \$2/);
+      assert.deepEqual(params, ['55555555-5555-5555-5555-555555555555', userId]);
+      return { rows: [], rowCount: 1 };
+    }
+  });
+  const repository = createPostgresRepository(database, { telegramUserId: 42 });
+
+  await repository.markPendingIngestionProcessed('55555555-5555-5555-5555-555555555555');
+});
+
+test('creates an ingest-deduped expense and reports the conflict on redelivery', async () => {
+  let inserts = 0;
+  const database = fakeDatabase((sql, params) => {
+    if (sql.startsWith('INSERT INTO expenses')) {
+      inserts += 1;
+      assert.match(sql, /ON CONFLICT \(user_id, ingest_id\) WHERE ingest_id IS NOT NULL DO NOTHING/);
+      assert.deepEqual(params, [
+        userId, budgetId, 'ARTISTA DE CAFE', 20.27, '2026-07-19', 'takenos:notification-42',
+      ]);
+      return inserts === 1
+        ? { rows: [{ id: expenseId }], rowCount: 1 }
+        : { rows: [], rowCount: 0 };
+    }
+  });
+  const repository = createPostgresRepository(database, {
+    telegramUserId: 42,
+    timeZone: 'America/Guatemala',
+  });
+  const expense = {
+    description: 'ARTISTA DE CAFE',
+    amount: 20.27,
+    budgetId,
+    ingestId: 'takenos:notification-42',
+    now: new Date('2026-07-20T05:30:00.000Z'),
+  };
+
+  const first = await repository.createExpenseIfNew(expense);
+  const repeated = await repository.createExpenseIfNew(expense);
+
+  assert.deepEqual(first, { created: true, expenseId });
+  assert.deepEqual(repeated, { created: false, expenseId: null });
+  assert.equal(inserts, 2);
+});
+
+test('flows an optional ingest id through the shared expense insert', async () => {
+  const database = fakeDatabase((sql, params) => {
+    if (sql.startsWith('INSERT INTO expenses')) {
+      assert.match(sql, /ingest_id/);
+      assert.equal(params[5], 'takenos:notification-42');
+      return { rows: [{ id: expenseId }], rowCount: 1 };
+    }
+  });
+  const repository = createPostgresRepository(database, {
+    telegramUserId: 42,
+    timeZone: 'America/Guatemala',
+  });
+
+  assert.equal(await repository.createExpense({
+    description: 'Coffee',
+    amount: 10.01,
+    budgetId,
+    now: new Date('2026-07-20T05:30:00.000Z'),
+    ingestId: 'takenos:notification-42',
+  }), expenseId);
 });
