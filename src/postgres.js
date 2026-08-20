@@ -512,6 +512,16 @@ export function createPostgresRepository(database, {
       );
     },
 
+    async cancelPendingIngestion(id) {
+      const userId = await getUserId();
+      const result = await database.query(
+        `DELETE FROM pending_ingestions
+         WHERE id = $1 AND user_id = $2 AND status = 'pending'`,
+        [id, userId],
+      );
+      if (result.rowCount !== 1) throw new Error(`Pending ingestion not found: ${id}`);
+    },
+
     async createExpenseIfNew(expense) {
       const userId = await getUserId();
       const now = expense.now ?? new Date();

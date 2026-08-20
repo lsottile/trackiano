@@ -439,6 +439,20 @@ test('marks a pending ingestion processed for the owner', async () => {
   await repository.markPendingIngestionProcessed('55555555-5555-5555-5555-555555555555');
 });
 
+test('deletes a pending ingestion only for the owner', async () => {
+  const database = fakeDatabase((sql, params) => {
+    if (sql.startsWith('DELETE FROM pending_ingestions')) {
+      assert.match(sql, /WHERE id = \$1 AND user_id = \$2/);
+      assert.match(sql, /status = 'pending'/);
+      assert.deepEqual(params, ['55555555-5555-5555-5555-555555555555', userId]);
+      return { rows: [], rowCount: 1 };
+    }
+  });
+  const repository = createPostgresRepository(database, { telegramUserId: 42 });
+
+  await repository.cancelPendingIngestion('55555555-5555-5555-5555-555555555555');
+});
+
 test('creates an ingest-deduped expense and reports the conflict on redelivery', async () => {
   let inserts = 0;
   const database = fakeDatabase((sql, params) => {

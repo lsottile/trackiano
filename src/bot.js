@@ -24,6 +24,7 @@ import {
   getPendingIngestion,
   getPendingIngestionsByMerchant,
   markPendingIngestionProcessed,
+  cancelPendingIngestion,
   saveMerchantMapping,
 } from "./storage.js";
 import { formatMoney, roundMoney } from "./money.js";
@@ -95,9 +96,10 @@ export function decodeMerchantCallback(data) {
   const [prefix, action, source, budget, ...extra] = data.split(".");
   if (
     prefix !== "tm" ||
-    action !== "select" ||
+    !["select", "cancel"].includes(action) ||
     extra.length ||
-    !source
+    !source ||
+    (action === "select") !== Boolean(budget)
   ) return null;
   const sourceId = decodeId(source);
   const budgetId = budget ? decodeId(budget) : null;
@@ -112,12 +114,22 @@ export function createMerchantSelectionPromptSender({
 } = {}) {
   return async (pending) => {
     const budgets = await readBudgets();
+    const budgetButtons = [];
+    for (let index = 0; index < budgets.length; index += 2) {
+      budgetButtons.push(budgets.slice(index, index + 2).map((budget) => ({
+        text: budget.name,
+        callback_data: encodeMerchantCallback("select", pending.id, budget.id),
+      })));
+    }
     return sendMessage(ownerId, `Select a category for ${pending.merchant}:`, {
       reply_markup: {
-        inline_keyboard: budgets.map((budget) => [{
-          text: budget.name,
-          callback_data: encodeMerchantCallback("select", pending.id, budget.id),
-        }]),
+        inline_keyboard: [
+          ...budgetButtons,
+          [{
+            text: "Cancel",
+            callback_data: encodeMerchantCallback("cancel", pending.id),
+          }],
+        ],
       },
     });
   };
@@ -148,20 +160,32 @@ export function registerMerchantMappingHandlers(composer, {
   getBudgets: readBudgets = getBudgets,
   processPendingMerchant: process = processPendingMerchant,
   saveMerchantMapping: saveMapping = saveMerchantMapping,
-  getPendingIngestionsByMerchant: readPendingIngestions = getPendingIngestionsByMerchant,
-  createExpenseIfNew: writeExpense = createExpenseIfNew,
-  markPendingIngestionProcessed: markProcessed = markPendingIngestionProcessed,
-  reportOperation = defaultOperationReporter,
-} = {}) {
+    getPendingIngestionsByMerchant: readPendingIngestions = getPendingIngestionsByMerchant,
+    createExpenseIfNew: writeExpense = createExpenseIfNew,
+    markPendingIngestionProcessed: markProcessed = markPendingIngestionProcessed,
+    cancelPendingIngestion: cancelPending = cancelPendingIngestion,
+    reportOperation = defaultOperationReporter,
+  } = {}) {
   return composer.on("callback_query:data", async (ctx, next) => {
     const callback = decodeMerchantCallback(ctx.callbackQuery.data);
-    if (!callback || callback.action !== "select") return next();
+    if (!callback) return next();
     await ctx.answerCallbackQuery?.();
 
-    const [pending, budgets] = await Promise.all([
-      readPendingIngestion(callback.sourceId),
-      readBudgets(),
-    ]);
+    const pending = await readPendingIngestion(callback.sourceId);
+    if (callback.action === "cancel") {
+      if (!pending || pending.status !== "pending") {
+        return ctx.reply("This pending purchase is no longer available.");
+      }
+      try {
+        await cancelPending(callback.sourceId);
+        return ctx.reply("Pending purchase discarded.");
+      } catch {
+        await reportFailure(reportOperation, "pending_merchant_cancellation");
+        return ctx.reply("Failed to discard pending purchase. Please try again.");
+      }
+    }
+
+    const budgets = await readBudgets();
     const budget = budgets.find((item) => item.id === callback.budgetId);
     if (!pending || pending.status !== "pending" || !budget) {
       return ctx.reply("This pending purchase or budget is no longer available.");

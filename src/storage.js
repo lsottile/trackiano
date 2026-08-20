@@ -29,6 +29,7 @@ const STORAGE_METHODS = [
   'getPendingIngestion',
   'getPendingIngestionsByMerchant',
   'markPendingIngestionProcessed',
+  'cancelPendingIngestion',
   'createExpenseIfNew',
 ];
 
@@ -75,4 +76,5 @@ export const createPendingIngestionIfNew = (...args) => callApplicationStorage('
 export const getPendingIngestion = (...args) => callApplicationStorage('getPendingIngestion', args);
 export const getPendingIngestionsByMerchant = (...args) => callApplicationStorage('getPendingIngestionsByMerchant', args);
 export const markPendingIngestionProcessed = (...args) => callApplicationStorage('markPendingIngestionProcessed', args);
+export const cancelPendingIngestion = (...args) => callApplicationStorage('cancelPendingIngestion', args);
 export const createExpenseIfNew = (...args) => callApplicationStorage('createExpenseIfNew', args);

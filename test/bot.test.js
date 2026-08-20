@@ -362,6 +362,14 @@ test('rejects malformed merchant callback data', () => {
     '11111111-1111-1111-1111-111111111111',
     '22222222-2222-2222-2222-222222222222',
   )), null);
+  assert.deepEqual(decodeMerchantCallback(encodeMerchantCallback(
+    'cancel',
+    '11111111-1111-1111-1111-111111111111',
+  )), {
+    action: 'cancel',
+    sourceId: '11111111-1111-1111-1111-111111111111',
+    budgetId: null,
+  });
 });
 
 test('renders an unknown merchant prompt from all current live budgets', async () => {
@@ -385,8 +393,11 @@ test('renders an unknown merchant prompt from all current live budgets', async (
   assert.match(sent[0][1], /ARTISTA DE CAFE/);
   assert.deepEqual(
     sent[0][2].reply_markup.inline_keyboard.flat().map((button) => button.text),
-    ['Coffee & Snacks', 'Entertainment', 'Restaurants'],
+    ['Coffee & Snacks', 'Entertainment', 'Restaurants', 'Cancel'],
   );
+  assert.equal(sent[0][2].reply_markup.inline_keyboard.length, 3);
+  assert.equal(sent[0][2].reply_markup.inline_keyboard[0].length, 2);
+  assert.equal(sent[0][2].reply_markup.inline_keyboard[2][0].text, 'Cancel');
 });
 
 test('saves the mapping before processing every pending purchase for that merchant', async () => {
@@ -489,6 +500,61 @@ test('selects a live budget and processes the pending merchant end-to-end', asyn
     'processed:pending-1',
   ]);
   assert.match(replies[0], /Mapped ARTISTA DE CAFE; processed 1 pending purchase\(s\)\./);
+});
+
+test('cancel callback deletes the pending ingestion without mapping or expense writes', async () => {
+  const pendingId = '11111111-1111-1111-1111-111111111111';
+  const replies = [];
+  const events = [];
+  const composer = new Composer();
+  registerMerchantMappingHandlers(composer, {
+    getPendingIngestion: async (id) => id === pendingId ? {
+      id: pendingId, merchant: 'ARTISTA DE CAFE', status: 'pending',
+    } : null,
+    cancelPendingIngestion: async (id) => events.push(`cancel:${id}`),
+    saveMerchantMapping: async () => events.push('mapping'),
+    processPendingMerchant: async () => events.push('process'),
+  });
+  const callbackQuery = { data: encodeMerchantCallback('cancel', pendingId) };
+
+  await composer.middleware()({
+    update: { callback_query: callbackQuery },
+    callbackQuery,
+    answerCallbackQuery: async () => {},
+    reply: async (text) => replies.push(text),
+  }, () => assert.fail('cancel callback must short-circuit'));
+
+  assert.deepEqual(events, [`cancel:${pendingId}`]);
+  assert.deepEqual(replies, ['Pending purchase discarded.']);
+});
+
+test('cancel callback rejects stale pending rows without deleting or processing', async () => {
+  const replies = [];
+  const composer = new Composer();
+  registerMerchantMappingHandlers(composer, {
+    getPendingIngestion: async () => ({
+      id: '11111111-1111-1111-1111-111111111111',
+      merchant: 'ARTISTA DE CAFE',
+      status: 'processed',
+    }),
+    cancelPendingIngestion: async () => assert.fail('must not delete stale row'),
+    processPendingMerchant: async () => assert.fail('must not process stale row'),
+  });
+  const callbackQuery = {
+    data: encodeMerchantCallback(
+      'cancel',
+      '11111111-1111-1111-1111-111111111111',
+    ),
+  };
+
+  await composer.middleware()({
+    update: { callback_query: callbackQuery },
+    callbackQuery,
+    answerCallbackQuery: async () => {},
+    reply: async (text) => replies.push(text),
+  }, () => {});
+
+  assert.match(replies[0], /no longer available/i);
 });
 
 test('rejects a stale selected budget without changing mapping or pending rows', async () => {
@@ -600,6 +666,30 @@ test('a non-owner mapping callback replies Unauthorized before any storage acces
         'select',
         '11111111-1111-1111-1111-111111111111',
         '22222222-2222-2222-2222-222222222222',
+      ),
+    },
+    from: { id: 7 },
+    reply: async (text) => replies.push(text),
+  }, () => assert.fail('authorization must short-circuit callback handlers'));
+  assert.deepEqual(replies, ['Unauthorized']);
+});
+
+test('a non-owner cancel callback replies Unauthorized before any storage access', async () => {
+  const replies = [];
+  const composer = new Composer();
+  composer.use((ctx, next) => {
+    if (ctx.from?.id !== 42) return ctx.reply('Unauthorized');
+    return next();
+  });
+  registerMerchantMappingHandlers(composer, {
+    getPendingIngestion: async () => assert.fail('must not read storage'),
+    cancelPendingIngestion: async () => assert.fail('must not delete storage'),
+  });
+  await composer.middleware()({
+    callbackQuery: {
+      data: encodeMerchantCallback(
+        'cancel',
+        '11111111-1111-1111-1111-111111111111',
       ),
     },
     from: { id: 7 },
