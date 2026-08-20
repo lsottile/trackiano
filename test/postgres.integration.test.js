@@ -29,15 +29,17 @@ test('real PostgreSQL enforces ownership, cents, soft deletion, and atomic claim
       '001_initial.sql',
       '002_lock_down_public_schema.sql',
       '003_category_inference_rules.sql',
+      '004_takenos_ingestion.sql',
     ]);
     assert.deepEqual(await runMigrations(database, { directory }), []);
     const protectedTables = await database.query(
       `SELECT relname FROM pg_class
        WHERE relname IN ('users', 'budgets', 'expenses', 'user_settings',
-                         'category_inference_rules')
+                         'category_inference_rules', 'merchant_mappings',
+                         'pending_ingestions')
          AND relrowsecurity = true`,
     );
-    assert.equal(protectedTables.rows.length, 5);
+    assert.equal(protectedTables.rows.length, 7);
     const clientPrivileges = await database.query(
       `SELECT has_table_privilege('anon', 'category_inference_rules', 'SELECT') AS anon_select,
               has_table_privilege('authenticated', 'category_inference_rules', 'INSERT') AS authenticated_insert`,
@@ -175,6 +177,26 @@ test('real PostgreSQL enforces ownership, cents, soft deletion, and atomic claim
       'SELECT count(*)::int AS count FROM category_inference_rules WHERE user_id = $1 AND description_fingerprint = decode($2, \'hex\')',
       [firstUser.rows[0].id, sharedFingerprint],
     )).rows[0].count, 1);
+
+    const ingestedExpense = {
+      budgetId: firstBudget.rows[0].id,
+      description: 'Takenos coffee',
+      amount: 20.27,
+      ingestId: 'takenos:dedupe-after-delete',
+      now: new Date('2026-08-11T05:30:00.000Z'),
+    };
+    const ingested = await repository.createExpenseIfNew(ingestedExpense);
+    assert.equal(ingested.created, true);
+    await repository.deleteExpense(ingested.expenseId);
+    assert.deepEqual(await repository.createExpenseIfNew(ingestedExpense), {
+      created: false,
+      expenseId: null,
+    });
+    assert.equal((await database.query(
+      'SELECT count(*)::int AS count FROM expenses WHERE user_id = $1 AND ingest_id = $2',
+      [firstUser.rows[0].id, 'takenos:dedupe-after-delete'],
+    )).rows[0].count, 1);
+
     await database.query('DELETE FROM expenses WHERE id = $1', [expenseId]);
     assert.equal((await database.query(
       'SELECT count(*)::int AS count FROM category_inference_rules WHERE user_id = $1 AND description_fingerprint = decode($2, \'hex\')',

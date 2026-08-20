@@ -26,6 +26,25 @@ function mapSettings(row) {
   };
 }
 
+function mapMerchantMapping(row) {
+  return {
+    merchant: row.merchant,
+    budgetId: row.budget_id,
+  };
+}
+
+function mapPendingIngestion(row) {
+  return {
+    id: row.id,
+    ingestId: row.ingest_id,
+    merchant: row.merchant,
+    description: row.description,
+    amount: money(row.amount),
+    status: row.status,
+    createdAt: row.created_at,
+  };
+}
+
 export function createPostgresRepository(database, {
   telegramUserId,
   timeZone = process.env.APP_TIMEZONE ?? 'UTC',
@@ -53,11 +72,12 @@ export function createPostgresRepository(database, {
     amount,
     budgetId,
     now = new Date(),
+    ingestId = null,
   }) {
     const result = await executor.query(
       `INSERT INTO expenses
-        (user_id, budget_id, description, amount, expense_date)
-       VALUES ($1, $2, $3, $4, $5)
+        (user_id, budget_id, description, amount, expense_date, ingest_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id`,
       [
         userId,
@@ -65,6 +85,7 @@ export function createPostgresRepository(database, {
         description,
         roundMoney(amount),
         formatDateInTimeZone(now, timeZone),
+        ingestId,
       ],
     );
     return result.rows[0]?.id ?? '';
@@ -377,6 +398,140 @@ export function createPostgresRepository(database, {
     async createExpense(expense) {
       const userId = await getUserId();
       return createExpenseWith(database, userId, expense);
+    },
+
+    async findActiveMerchantMapping(merchant) {
+      const userId = await getUserId();
+      const result = await database.query(
+        `SELECT merchant, budget_id
+         FROM merchant_mappings
+         WHERE user_id = $1 AND merchant = $2 AND archived_at IS NULL`,
+        [userId, merchant],
+      );
+      return result.rows[0] ? mapMerchantMapping(result.rows[0]) : null;
+    },
+
+    async saveMerchantMapping(merchant, budgetId) {
+      const userId = await getUserId();
+      const result = await database.query(
+        `INSERT INTO merchant_mappings (user_id, merchant, budget_id)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, merchant)
+         DO UPDATE SET budget_id = EXCLUDED.budget_id,
+                       archived_at = NULL,
+                       updated_at = now()
+         RETURNING merchant, budget_id`,
+        [userId, merchant, budgetId],
+      );
+      return result.rows[0] ? mapMerchantMapping(result.rows[0]) : null;
+    },
+
+    async getActiveMerchantMappings() {
+      const userId = await getUserId();
+      const result = await database.query(
+        `SELECT merchant, budget_id
+         FROM merchant_mappings
+         WHERE user_id = $1 AND archived_at IS NULL
+         ORDER BY merchant`,
+        [userId],
+      );
+      return result.rows.map(mapMerchantMapping);
+    },
+
+    async archiveMerchantMapping(merchant) {
+      const userId = await getUserId();
+      await database.query(
+        `UPDATE merchant_mappings
+         SET archived_at = now(), updated_at = now()
+         WHERE user_id = $1 AND merchant = $2 AND archived_at IS NULL`,
+        [userId, merchant],
+      );
+    },
+
+    async createPendingIngestionIfNew(pending) {
+      const userId = await getUserId();
+      const inserted = await database.query(
+        `INSERT INTO pending_ingestions
+          (user_id, ingest_id, merchant, description, amount)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (user_id, ingest_id) DO NOTHING
+         RETURNING id, ingest_id, merchant, description, amount, status, created_at`,
+        [
+          userId,
+          pending.ingestId,
+          pending.merchant,
+          pending.description,
+          roundMoney(pending.amount),
+        ],
+      );
+      if (inserted.rows.length === 1) {
+        return { created: true, row: mapPendingIngestion(inserted.rows[0]) };
+      }
+      const existing = await database.query(
+        `SELECT id, ingest_id, merchant, description, amount, status, created_at
+         FROM pending_ingestions
+         WHERE user_id = $1 AND ingest_id = $2`,
+        [userId, pending.ingestId],
+      );
+      return {
+        created: false,
+        row: existing.rows[0] ? mapPendingIngestion(existing.rows[0]) : null,
+      };
+    },
+
+    async getPendingIngestion(id) {
+      const userId = await getUserId();
+      const result = await database.query(
+        `SELECT id, ingest_id, merchant, description, amount, status, created_at
+         FROM pending_ingestions
+         WHERE id = $1 AND user_id = $2`,
+        [id, userId],
+      );
+      return result.rows[0] ? mapPendingIngestion(result.rows[0]) : null;
+    },
+
+    async getPendingIngestionsByMerchant(merchant) {
+      const userId = await getUserId();
+      const result = await database.query(
+        `SELECT id, ingest_id, merchant, description, amount, status, created_at
+         FROM pending_ingestions
+         WHERE user_id = $1 AND merchant = $2 AND status = 'pending'
+         ORDER BY created_at`,
+        [userId, merchant],
+      );
+      return result.rows.map(mapPendingIngestion);
+    },
+
+    async markPendingIngestionProcessed(id) {
+      const userId = await getUserId();
+      await database.query(
+        `UPDATE pending_ingestions
+         SET status = 'processed', updated_at = now()
+         WHERE id = $1 AND user_id = $2`,
+        [id, userId],
+      );
+    },
+
+    async createExpenseIfNew(expense) {
+      const userId = await getUserId();
+      const now = expense.now ?? new Date();
+      const result = await database.query(
+        `INSERT INTO expenses
+          (user_id, budget_id, description, amount, expense_date, ingest_id)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (user_id, ingest_id) WHERE ingest_id IS NOT NULL
+         DO NOTHING
+         RETURNING id`,
+        [
+          userId,
+          expense.budgetId,
+          expense.description,
+          roundMoney(expense.amount),
+          formatDateInTimeZone(now, timeZone),
+          expense.ingestId ?? null,
+        ],
+      );
+      return { created: result.rows.length === 1, expenseId: result.rows[0]?.id ?? null };
     },
   };
 }
