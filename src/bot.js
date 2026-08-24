@@ -13,7 +13,6 @@ import {
   createExpenseAndGetTotalToday,
   getBudgets,
   getMonthlyExpenses,
-  getMonthlyExpenseDetails,
   getCategoryExpenses,
   getPeriodSpent,
   createBudget,
@@ -29,7 +28,9 @@ import {
 } from "./storage.js";
 import { formatMoney, roundMoney } from "./money.js";
 import { getPeriodStart, daysUntilPayday } from "./pay.js";
-import { formatMonthlySummary, formatVerboseMonthlySummary } from "./summary.js";
+import { getTrailingWeeklyPeriod } from "./periods.js";
+import { formatMonthlySummary, formatWeeklyAverage } from "./summary.js";
+import { createMiniAppServer } from "./miniapp.js";
 import { handleTargetCommand } from "./target.js";
 import { assertRuntimeAndBackend, assertRuntimeEnvironment } from "./runtimeConfig.js";
 
@@ -256,23 +257,6 @@ export function registerExpenseActionHandlers(composer, {
   });
 }
 
-async function handleCompleteSummary(ctx, {
-  getBudgets: readBudgets = getBudgets,
-  getMonthlyExpenseDetails: readMonthlyExpenseDetails = getMonthlyExpenseDetails,
-} = {}) {
-  const [budgets, expenses] = await Promise.all([
-    readBudgets(),
-    readMonthlyExpenseDetails(),
-  ]);
-  return ctx.reply(formatVerboseMonthlySummary(budgets, expenses));
-}
-
-export function registerCompleteSummaryHandler(composer, dependencies) {
-  return composer.on("message:text").hears("/summary-complete", (ctx) =>
-    handleCompleteSummary(ctx, dependencies),
-  );
-}
-
 bot.use((ctx, next) => {
   if (ctx.from?.id !== OWNER_ID) return ctx.reply("Unauthorized");
   return next();
@@ -291,7 +275,8 @@ bot.command("help", async (ctx) => {
       `/budget <category> — how much you can spend per day\n` +
       `/budget <category> detail — expense list for the current period\n` +
       `/summary — all expenses this month\n` +
-      `/summary-complete — monthly summary with top expenses\n` +
+      `/average [maximum] — daily average for the last 7 days\n` +
+      `/dashboard — open the read-only dashboard\n` +
       `/target [amount] — show or set the recurring daily target\n` +
       `/categories — available categories\n\n` +
       `*Management*\n` +
@@ -305,8 +290,6 @@ bot.command("categories", async (ctx) => {
   const lines = budgets.map((b) => `• ${b.name}`).join("\n");
   return ctx.reply(`Available categories:\n${lines}`);
 });
-
-registerCompleteSummaryHandler(bot);
 
 bot.command("balance", async (ctx) => {
   const category = ctx.match.trim();
@@ -333,6 +316,48 @@ bot.command("summary", async (ctx) => {
   ]);
   return ctx.reply(formatMonthlySummary(budgets, totals));
 });
+
+export async function handleWeeklyAverage(ctx, {
+  getExpensesInRange: readExpenses = getExpensesInRange,
+  getTrailingWeeklyPeriod: getPeriod = getTrailingWeeklyPeriod,
+} = {}) {
+  const rawCap = ctx.match.trim();
+  if (rawCap && !/^\d+(?:\.\d+)?$/.test(rawCap)) {
+    return ctx.reply("Usage: /average [maximum per expense]");
+  }
+  const maxAmount = rawCap ? Number(rawCap) : null;
+  if (maxAmount !== null && (!Number.isFinite(maxAmount) || maxAmount <= 0)) {
+    return ctx.reply("Usage: /average [maximum per expense]");
+  }
+  const period = getPeriod();
+  const totals = await readExpenses(
+    period.start,
+    period.end,
+    maxAmount === null ? {} : { maxAmount },
+  );
+  const total = roundMoney(Object.values(totals).reduce((sum, amount) => sum + amount, 0));
+  return ctx.reply(formatWeeklyAverage({ period, total, maxAmount }));
+}
+
+bot.command("average", handleWeeklyAverage);
+
+export async function handleDashboardCommand(ctx, {
+  webAppUrl = process.env.WEB_APP_URL ?? '',
+} = {}) {
+  if (!webAppUrl.trim()) {
+    return ctx.reply("WEB_APP_URL is not configured.");
+  }
+  return ctx.reply("Open the dashboard:", {
+    reply_markup: {
+      inline_keyboard: [[{
+        text: "Open dashboard",
+        web_app: { url: webAppUrl },
+      }]],
+    },
+  });
+}
+
+bot.command("dashboard", handleDashboardCommand);
 
 bot.command("target", handleTargetCommand);
 
@@ -492,19 +517,34 @@ export async function handleExpenseMessage(ctx, {
 
 bot.on("message:text", handleExpenseMessage);
 
-export function startBot({
+export async function startBot({
   preflight = () => { assertRuntimeAndBackend(); assertRuntimeEnvironment(); },
   createBot = () => {
     const applicationBot = new Bot(process.env.TELEGRAM_TOKEN);
     applicationBot.use(bot);
     return applicationBot;
   },
+  startWebApp = process.env.PORT ? () => createMiniAppServer().start() : null,
 } = {}) {
   preflight();
   const bot = createBot();
-  process.once("SIGINT", () => bot.stop());
-  process.once("SIGTERM", () => bot.stop());
+  const webAppServer = startWebApp ? await startWebApp() : null;
+  process.once("SIGINT", async () => {
+    await webAppServer?.close?.();
+    bot.stop();
+  });
+  process.once("SIGTERM", async () => {
+    await webAppServer?.close?.();
+    bot.stop();
+  });
   return bot.start();
 }
 
-if (isDirectExecution) startBot();
+if (isDirectExecution) {
+  try {
+    await startBot();
+  } catch (error) {
+    console.error(error);
+    process.exitCode = 1;
+  }
+}

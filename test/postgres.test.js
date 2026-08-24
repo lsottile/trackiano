@@ -222,18 +222,20 @@ test('recategorization propagates update and upsert failures through the transac
   }
 });
 
-test('groups active expenses by budget in a half-open date range', async () => {
-  const database = fakeDatabase((sql) => {
+test('groups active expenses by budget in a half-open date range with an optional cap', async () => {
+  const database = fakeDatabase((sql, params) => {
     if (sql.includes('GROUP BY budget_id')) {
       assert.match(sql, /expense_date >= \$2 AND expense_date < \$3/);
       assert.match(sql, /deleted_at IS NULL/);
+      assert.match(sql, /\(\$4::numeric IS NULL OR amount <= \$4\)/);
+      assert.deepEqual(params, [userId, '2026-07-01', '2026-08-01', 100]);
       return { rows: [{ budget_id: budgetId, total: '20.27' }], rowCount: 1 };
     }
   });
   const repository = createPostgresRepository(database, { telegramUserId: 42 });
 
   assert.deepEqual(
-    await repository.getExpensesInRange('2026-07-01', '2026-08-01'),
+    await repository.getExpensesInRange('2026-07-01', '2026-08-01', { maxAmount: 100 }),
     { [budgetId]: 20.27 },
   );
 });

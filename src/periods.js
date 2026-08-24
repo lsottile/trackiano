@@ -29,6 +29,21 @@ function addDays(value, days) {
   return formatDateOnly(date);
 }
 
+export function getCalendarMonthPeriod({
+  now = new Date(),
+  offset = 0,
+  timeZone = process.env.APP_TIMEZONE ?? DEFAULT_APP_TIMEZONE,
+} = {}) {
+  const [year, month] = formatDateInTimeZone(now, timeZone).split('-').map(Number);
+  const startDate = new Date(Date.UTC(year, month - 1 + offset, 1));
+  const endDate = new Date(Date.UTC(year, month + offset, 1));
+  return {
+    start: formatDateOnly(startDate),
+    end: formatDateOnly(endDate),
+    days: (endDate.getTime() - startDate.getTime()) / DAY_IN_MS,
+  };
+}
+
 export function getLatestClosedWeeklyPeriod({
   now = new Date(),
   timeZone = process.env.APP_TIMEZONE ?? DEFAULT_APP_TIMEZONE,
@@ -41,15 +56,18 @@ export function getLatestClosedWeeklyPeriod({
   return { key: `${start}/${end}`, start, end, days: 7 };
 }
 
+export function getTrailingWeeklyPeriod({
+  now = new Date(),
+  timeZone = process.env.APP_TIMEZONE ?? DEFAULT_APP_TIMEZONE,
+} = {}) {
+  const end = addDays(formatDateInTimeZone(now, timeZone), 1);
+  return { start: addDays(end, -7), end, days: 7 };
+}
+
 export function getLatestClosedMonthlyPeriod({
   now = new Date(),
   timeZone = process.env.APP_TIMEZONE ?? DEFAULT_APP_TIMEZONE,
 } = {}) {
-  const [year, month] = formatDateInTimeZone(now, timeZone).split('-').map(Number);
-  const endDate = new Date(Date.UTC(year, month - 1, 1));
-  const startDate = new Date(Date.UTC(year, month - 2, 1));
-  const start = formatDateOnly(startDate);
-  const end = formatDateOnly(endDate);
-  const days = (endDate.getTime() - startDate.getTime()) / DAY_IN_MS;
-  return { key: start.slice(0, 7), start, end, days };
+  const period = getCalendarMonthPeriod({ now, offset: -1, timeZone });
+  return { key: period.start.slice(0, 7), ...period };
 }

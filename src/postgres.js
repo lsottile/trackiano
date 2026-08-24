@@ -203,15 +203,16 @@ export function createPostgresRepository(database, {
       return money(result.rows[0]?.total ?? 0);
     },
 
-    async getExpensesInRange(start, end) {
+    async getExpensesInRange(start, end, { maxAmount = null } = {}) {
       const userId = await getUserId();
       const result = await database.query(
         `SELECT budget_id, SUM(amount) AS total
-         FROM expenses
-         WHERE user_id = $1 AND expense_date >= $2 AND expense_date < $3
-           AND deleted_at IS NULL
-         GROUP BY budget_id`,
-        [userId, start, end],
+          FROM expenses
+          WHERE user_id = $1 AND expense_date >= $2 AND expense_date < $3
+            AND deleted_at IS NULL
+            AND ($4::numeric IS NULL OR amount <= $4)
+          GROUP BY budget_id`,
+        [userId, start, end, maxAmount],
       );
       return Object.fromEntries(
         result.rows.map((row) => [row.budget_id, money(row.total)]),
@@ -223,7 +224,7 @@ export function createPostgresRepository(database, {
       return this.getExpensesInRange(start, end);
     },
 
-    async getMonthlyExpenseDetails({ now = new Date() } = {}) {
+    async getMonthlyExpenseDetails({ now = new Date(), maxAmount = null } = {}) {
       const userId = await getUserId();
       const { start, end } = monthlyRange(now, timeZone);
       const result = await database.query(
@@ -231,14 +232,35 @@ export function createPostgresRepository(database, {
          FROM expenses
          WHERE user_id = $1 AND expense_date >= $2 AND expense_date < $3
            AND deleted_at IS NULL
-         ORDER BY expense_date DESC, created_at DESC`,
-        [userId, start, end],
+           AND ($4::numeric IS NULL OR amount <= $4)
+          ORDER BY expense_date DESC, created_at DESC`,
+        [userId, start, end, maxAmount],
       );
       return result.rows.map((row) => ({
         id: row.id,
         budgetId: row.budget_id,
         description: row.description,
         amount: money(row.amount),
+      }));
+    },
+
+    async getRecentExpenses(limit = 20, { maxAmount = null } = {}) {
+      const userId = await getUserId();
+      const result = await database.query(
+        `SELECT id, budget_id, description, amount, expense_date
+         FROM expenses
+         WHERE user_id = $1 AND deleted_at IS NULL
+           AND ($2::numeric IS NULL OR amount <= $2)
+         ORDER BY expense_date DESC, created_at DESC
+         LIMIT $3`,
+        [userId, maxAmount, limit],
+      );
+      return result.rows.map((row) => ({
+        id: row.id,
+        budgetId: row.budget_id,
+        description: row.description,
+        amount: money(row.amount),
+        expenseDate: row.expense_date,
       }));
     },
 
@@ -303,13 +325,14 @@ export function createPostgresRepository(database, {
       return result.rowCount === 1;
     },
 
-    async getTotalSpentInPeriod(periodStart) {
+    async getTotalSpentInPeriod(periodStart, { maxAmount = null } = {}) {
       const userId = await getUserId();
       const result = await database.query(
         `SELECT COALESCE(SUM(amount), 0) AS total
          FROM expenses
-         WHERE user_id = $1 AND expense_date >= $2 AND deleted_at IS NULL`,
-        [userId, formatDateInTimeZone(periodStart, timeZone)],
+         WHERE user_id = $1 AND expense_date >= $2 AND deleted_at IS NULL
+           AND ($3::numeric IS NULL OR amount <= $3)`,
+        [userId, formatDateInTimeZone(periodStart, timeZone), maxAmount],
       );
       return money(result.rows[0]?.total ?? 0);
     },

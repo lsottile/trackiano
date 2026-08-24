@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   getLatestClosedMonthlyPeriod,
   getLatestClosedWeeklyPeriod,
+  getTrailingWeeklyPeriod,
 } from '../src/periods.js';
 
 test('weekly period follows the app timezone across the Sunday and Monday boundary', () => {
@@ -26,6 +27,13 @@ test('weekly period follows the app timezone across the Sunday and Monday bounda
       end: '2026-07-27',
       days: 7,
     },
+  );
+});
+
+test('trailing weekly period includes today and the prior six days', () => {
+  assert.deepEqual(
+    getTrailingWeeklyPeriod({ now: new Date('2026-08-24T12:00:00.000Z'), timeZone: 'UTC' }),
+    { start: '2026-08-18', end: '2026-08-25', days: 7 },
   );
 });
 

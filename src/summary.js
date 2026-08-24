@@ -94,3 +94,14 @@ export function formatVerboseMonthlySummary(budgets, expenses) {
 
   return `${summary}\n\nTop expenses:\n${details.join('\n')}`;
 }
+
+export function formatWeeklyAverage({ period, total, maxAmount = null }) {
+  const inclusiveEnd = new Date(`${period.end}T00:00:00.000Z`);
+  inclusiveEnd.setUTCDate(inclusiveEnd.getUTCDate() - 1);
+  const capLine = maxAmount === null
+    ? ''
+    : `\nSin gastos mayores a $${formatMoney(maxAmount)}`;
+  return `Promedio últimos 7 días\n${period.start} a ${inclusiveEnd.toISOString().slice(0, 10)}\n\n` +
+    `Promedio: $${formatMoney(roundMoney(total / period.days))}/día\n` +
+    `Total: $${formatMoney(total)}${capLine}`;
+}

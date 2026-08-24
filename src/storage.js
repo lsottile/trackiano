@@ -7,6 +7,7 @@ const STORAGE_METHODS = [
   'getExpensesInRange',
   'getMonthlyExpenses',
   'getMonthlyExpenseDetails',
+  'getRecentExpenses',
   'getSettings',
   'setDailyTarget',
   'claimSummaryPeriod',
@@ -54,6 +55,7 @@ export const getPeriodSpent = (...args) => callApplicationStorage('getPeriodSpen
 export const getExpensesInRange = (...args) => callApplicationStorage('getExpensesInRange', args);
 export const getMonthlyExpenses = (...args) => callApplicationStorage('getMonthlyExpenses', args);
 export const getMonthlyExpenseDetails = (...args) => callApplicationStorage('getMonthlyExpenseDetails', args);
+export const getRecentExpenses = (...args) => callApplicationStorage('getRecentExpenses', args);
 export const getSettings = (...args) => callApplicationStorage('getSettings', args);
 export const setDailyTarget = (...args) => callApplicationStorage('setDailyTarget', args);
 export const claimSummaryPeriod = (...args) => callApplicationStorage('claimSummaryPeriod', args);

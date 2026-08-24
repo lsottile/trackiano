@@ -9,9 +9,10 @@ import {
   encodeExpenseCallback,
   encodeMerchantCallback,
   handleBudget,
+  handleDashboardCommand,
   handleExpenseMessage,
+  handleWeeklyAverage,
   processPendingMerchant,
-  registerCompleteSummaryHandler,
   registerExpenseActionHandlers,
   registerMerchantMappingHandlers,
   startBot,
@@ -19,7 +20,7 @@ import {
 
 test('bot startup preflight runs before construction and polling', async () => {
   const events = [];
-  const started = startBot({
+  const started = await startBot({
     preflight: () => events.push('preflight'),
     createBot: () => {
       events.push('construct');
@@ -30,9 +31,9 @@ test('bot startup preflight runs before construction and polling', async () => {
   assert.deepEqual(events, ['preflight', 'construct', 'poll']);
 });
 
-test('bot startup failure prevents construction and polling', () => {
+test('bot startup failure prevents construction and polling', async () => {
   let constructed = false;
-  assert.throws(() => startBot({
+  await assert.rejects(startBot({
     preflight: () => { throw new Error('bad runtime'); },
     createBot: () => { constructed = true; },
   }), /bad runtime/);
@@ -60,39 +61,51 @@ test('/budget detail returns usage without reading budgets', async () => {
   assert.equal(getBudgetsCalled, false);
 });
 
-test('handles only the exact summary-complete message with the verbose summary', async () => {
+test('/dashboard opens the configured web app', async () => {
   const replies = [];
-  const composer = new Composer();
-  registerCompleteSummaryHandler(composer, {
-    getBudgets: async () => [{ id: 'food', name: 'Food' }],
-    getMonthlyExpenseDetails: async () => [{
-      id: 'coffee', budgetId: 'food', description: 'Coffee', amount: 5,
-    }],
+  await handleDashboardCommand({
+    reply: (...args) => replies.push(args),
+  }, {
+    webAppUrl: 'https://trackiano.example.com/app',
   });
 
-  await composer.middleware()({
-    update: { message: { text: '/summary-complete' } },
-    message: { text: '/summary-complete' },
-    reply: (message) => {
-      replies.push(message);
-      return 'replied';
+  assert.equal(replies[0][0], 'Open the dashboard:');
+  assert.equal(replies[0][1].reply_markup.inline_keyboard[0][0].web_app.url, 'https://trackiano.example.com/app');
+});
+
+test('/average excludes individual expenses above its optional cap', async () => {
+  const replies = [];
+  const calls = [];
+  await handleWeeklyAverage({
+    match: '100',
+    reply: (message) => replies.push(message),
+  }, {
+    getExpensesInRange: async (...args) => {
+      calls.push(args);
+      return { food: 280, transport: 140 };
     },
-  }, () => assert.fail('exact command must short-circuit the generic text handler'));
-
-  assert.equal(
-    replies[0],
-    'Monthly expenses:\n• Food: $5.00 · 100% ██████████\n\nTotal: $5.00\n\n' +
-      'Top expenses:\nFood:\n  • Coffee: $5.00',
-  );
-
-  let continued = false;
-  await composer.middleware()({
-    update: { message: { text: '/summary-complete extra' } },
-    message: { text: '/summary-complete extra' },
-  }, () => {
-    continued = true;
+    getTrailingWeeklyPeriod: () => ({
+      start: '2026-08-18', end: '2026-08-25', days: 7,
+    }),
   });
-  assert.equal(continued, true);
+
+  assert.deepEqual(calls, [['2026-08-18', '2026-08-25', { maxAmount: 100 }]]);
+  assert.match(replies[0], /Promedio: \$60\.00\/día/);
+  assert.match(replies[0], /Sin gastos mayores a \$100\.00/);
+});
+
+test('/average rejects an invalid cap without reading expenses', async () => {
+  let readExpenses = false;
+  const replies = [];
+  await handleWeeklyAverage({
+    match: '100 extra',
+    reply: (message) => replies.push(message),
+  }, {
+    getExpensesInRange: async () => { readExpenses = true; },
+  });
+
+  assert.equal(replies[0], 'Usage: /average [maximum per expense]');
+  assert.equal(readExpenses, false);
 });
 
 test('logs a Telegram expense rounded to cents with exact action buttons', async () => {

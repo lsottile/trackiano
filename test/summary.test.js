@@ -6,6 +6,7 @@ import {
   formatAutomaticSummary,
   formatMonthlySummary,
   formatVerboseMonthlySummary,
+  formatWeeklyAverage,
 } from '../src/summary.js';
 
 test('formats the current month summary by descending spend with percentages and bars', () => {
@@ -142,5 +143,18 @@ test('formats a closed weekly range with its inclusive Sunday and target', () =>
       'Total: $400.00\n' +
       'Target: $490.00\n' +
       '$90.00 under target',
+  );
+});
+
+test('formats a trailing weekly average with an optional extraordinary-expense cap', () => {
+  assert.equal(
+    formatWeeklyAverage({
+      period: { start: '2026-08-18', end: '2026-08-25', days: 7 },
+      total: 420,
+      maxAmount: 100,
+    }),
+    'Promedio últimos 7 días\n2026-08-18 a 2026-08-24\n\n' +
+      'Promedio: $60.00/día\nTotal: $420.00\n' +
+      'Sin gastos mayores a $100.00',
   );
 });
