@@ -21,6 +21,8 @@ import { assertRuntimeAndBackend, assertRuntimeEnvironment } from './runtimeConf
 
 const DEFAULT_PORT = 3000;
 const DEFAULT_MAX_AGE_SECONDS = 15 * 60;
+const DASHBOARD_MONTH_HISTORY = 3;
+const DASHBOARD_CACHE_TTL_MS = 10_000;
 
 function resolveWebAppPort(port = null) {
   const candidates = [
@@ -85,7 +87,7 @@ async function collectMonthData({
 }) {
   const budgets = await readBudgets();
   const budgetNames = Object.fromEntries(budgets.map((budget) => [budget.id, budget.name]));
-  const months = await Promise.all([0, 1, 2, 3, 4, 5].map(async (offset) => {
+  const months = await Promise.all(Array.from({ length: DASHBOARD_MONTH_HISTORY }, async (_, offset) => {
     const range = getCalendarMonthPeriod({ now, offset: -offset, timeZone });
     const totals = await readExpenses(range.start, range.end);
     const total = roundMoney(Object.values(totals).reduce((sum, amount) => sum + amount, 0));
@@ -231,7 +233,7 @@ function renderDashboardHTML() {
     <div class="summary">
       <div class="card"><div class="muted">Mes actual</div><div class="metric" id="month-total">-</div><div class="muted" id="month-meta"></div></div>
       <div class="card"><div class="muted">Hoy</div><div class="metric" id="today-spent">-</div><div class="muted" id="today-meta"></div></div>
-      <div class="card"><div class="muted">Proyección fin de periodo</div><div class="metric" id="projected-end">-</div><div class="muted" id="projection-meta"></div></div>
+      <div class="card"><div class="muted">Proyección del mes</div><div class="metric" id="projected-end">-</div><div class="muted" id="projection-meta"></div></div>
       <div class="card"><div class="muted">Restante vs meta</div><div class="metric" id="remaining">-</div><div class="muted" id="remaining-meta"></div><div class="progress"><span id="target-progress"></span></div></div>
     </div>
 
@@ -278,6 +280,23 @@ function renderDashboardHTML() {
         currency: 'USD',
         maximumFractionDigits: 0,
       }).format(value ?? 0);
+    }
+
+    function scheduleFrame(callback) {
+      if (window.requestAnimationFrame) {
+        window.requestAnimationFrame(() => callback());
+        return;
+      }
+      setTimeout(callback, 0);
+    }
+
+    function formatExpenseDate(value) {
+      const raw = String(value ?? '').trim();
+      if (!raw) return 'Sin fecha';
+      const date = /^\d{4}-\d{2}-\d{2}$/.test(raw)
+        ? new Date(raw + 'T00:00:00.000Z')
+        : new Date(raw);
+      return Number.isNaN(date.getTime()) ? 'Sin fecha' : dateFormat.format(date);
     }
 
     function percentText(value) {
@@ -418,9 +437,9 @@ function renderDashboardHTML() {
       ].join('');
     }
 
-    function renderDashboard(data) {
+    function renderSummary(data) {
       const currentMonth = data.currentMonth;
-      document.getElementById('hero-meta').textContent = 'Corte del periodo: ' + data.payPeriod.start + ' · ' + data.payPeriod.daysElapsed + ' días transcurridos';
+      document.getElementById('hero-meta').textContent = 'Mes en curso · ' + currentMonth.label;
       document.getElementById('today-spent').textContent = moneyText(data.payPeriod.today);
       document.getElementById('today-meta').textContent = data.payPeriod.today === 0 ? 'Sin gastos hoy' : 'Gasto de la jornada';
       document.getElementById('projected-end').textContent = moneyText(data.payPeriod.projectedEnd);
@@ -449,12 +468,20 @@ function renderDashboardHTML() {
         item.innerHTML = '<div class="expense-row"><strong>' + escapeHtml(expense.description) + '</strong><span>' +
           moneyText(expense.amount) + '</span></div><div class="expense-meta"><span class="chip">' +
           escapeHtml(expense.name) + '</span><span>' +
-          dateFormat.format(new Date(expense.expenseDate + 'T00:00:00.000Z')) + '</span></div>';
+          escapeHtml(formatExpenseDate(expense.expenseDate)) + '</span></div>';
         return item;
       }));
+    }
 
+    function renderCharts(data) {
+      const currentMonth = data.currentMonth;
       renderDonutChart(currentMonth.categories.slice(0, 6));
       renderMonthlyChart([...data.months].reverse());
+    }
+
+    function renderDashboard(data) {
+      renderSummary(data);
+      scheduleFrame(() => renderCharts(data));
     }
 
     async function refresh() {
@@ -484,7 +511,8 @@ export function createMiniAppServer({
   port = resolveWebAppPort(),
   getDashboardData: readDashboardData = buildDashboardData,
   parseInitData = parseTelegramWebAppInitData,
-} = {}) {
+  } = {}) {
+  let dashboardCache = null;
   const server = createServer(async (request, response) => {
     const requestUrl = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
     if (requestUrl.pathname === '/health') {
@@ -501,15 +529,15 @@ export function createMiniAppServer({
           response.end(JSON.stringify({ error: 'Unauthorized' }));
           return;
         }
-        const maxAmountRaw = requestUrl.searchParams.get('maxAmount');
-        const maxAmount = maxAmountRaw === null || maxAmountRaw === '' ? null : Number(maxAmountRaw);
-        if (maxAmount !== null && (!Number.isFinite(maxAmount) || maxAmount < 0)) {
-          response.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
-          response.end(JSON.stringify({ error: 'Invalid maxAmount' }));
+        const now = Date.now();
+        if (dashboardCache && (now - dashboardCache.at) < DASHBOARD_CACHE_TTL_MS) {
+          response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'private, max-age=10' });
+          response.end(JSON.stringify(dashboardCache.payload));
           return;
         }
-        const payload = await readDashboardData({ now: new Date(), timeZone, maxAmount });
-        response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+        const payload = await readDashboardData({ now: new Date(), timeZone });
+        dashboardCache = { at: now, payload };
+        response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'private, max-age=10' });
         response.end(JSON.stringify(payload));
         return;
       } catch (error) {

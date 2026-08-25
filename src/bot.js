@@ -42,6 +42,17 @@ if (isDirectExecution) { assertRuntimeAndBackend(); assertRuntimeEnvironment(); 
 const OWNER_ID = Number(process.env.TELEGRAM_OWNER_ID);
 const bot = new Composer();
 
+function resolveWebAppPort() {
+  const candidates = [
+    process.env.PORT,
+    process.env.RAILWAY_TCP_APPLICATION_PORT,
+    process.env.RAILWAY_TCP_PROXY_PORT,
+    process.env.RAILWAY_PORT,
+  ];
+  const value = candidates.find((candidate) => candidate && candidate.trim());
+  return Number(value ?? 3000);
+}
+
 function defaultOperationReporter({ operation }) {
   console.error(JSON.stringify({ operation, outcome: "failure" }));
 }
@@ -524,7 +535,7 @@ export async function startBot({
     applicationBot.use(bot);
     return applicationBot;
   },
-  startWebApp = process.env.PORT ? () => createMiniAppServer().start() : null,
+  startWebApp = () => createMiniAppServer({ port: resolveWebAppPort() }).start(),
 } = {}) {
   preflight();
   const bot = createBot();
@@ -537,7 +548,16 @@ export async function startBot({
     await webAppServer?.close?.();
     bot.stop();
   });
-  return bot.start();
+  while (true) {
+    try {
+      return await bot.start();
+    } catch (error) {
+      if (error?.error_code !== 409 && !String(error?.message ?? '').includes('Conflict: terminated by other getUpdates request')) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+  }
 }
 
 if (isDirectExecution) {
