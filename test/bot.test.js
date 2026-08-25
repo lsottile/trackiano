@@ -69,8 +69,7 @@ test('/dashboard opens the configured web app', async () => {
     webAppUrl: 'https://trackiano.example.com/app',
   });
 
-  assert.equal(replies[0][0], 'Open the dashboard:');
-  assert.equal(replies[0][1].reply_markup.inline_keyboard[0][0].web_app.url, 'https://trackiano.example.com/app');
+  assert.equal(replies[0][0], 'Open the dashboard: https://trackiano.example.com/app');
 });
 
 test('/average excludes individual expenses above its optional cap', async () => {

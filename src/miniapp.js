@@ -2,19 +2,11 @@ import 'dotenv/config';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
-import { daysSincePeriodStart, daysUntilPayday, getPeriodStart } from './pay.js';
-import {
-  getCalendarMonthPeriod,
-  getLatestClosedMonthlyPeriod,
-  getLatestClosedWeeklyPeriod,
-} from './periods.js';
+import { formatDateInTimeZone, getCalendarMonthPeriod } from './periods.js';
 import {
   getBudgets,
   getExpensesInRange,
   getRecentExpenses,
-  getSettings,
-  getTotalSpentInPeriod,
-  getTotalSpentToday,
 } from './storage.js';
 import { roundMoney } from './money.js';
 import { assertRuntimeAndBackend, assertRuntimeEnvironment } from './runtimeConfig.js';
@@ -109,63 +101,48 @@ async function collectMonthData({
   return { budgets, budgetNames, months };
 }
 
+function getDaysElapsedInMonth(now, timeZone, monthStart) {
+  const currentDate = formatDateInTimeZone(now, timeZone);
+  const elapsed = Math.floor((Date.parse(`${currentDate}T00:00:00.000Z`) - Date.parse(`${monthStart}T00:00:00.000Z`)) / (24 * 60 * 60 * 1000)) + 1;
+  return Math.max(1, elapsed);
+}
+
 export async function buildDashboardData({
   now = new Date(),
   timeZone = process.env.APP_TIMEZONE ?? 'UTC',
   getBudgets: readBudgets = getBudgets,
   getExpensesInRange: readExpenses = getExpensesInRange,
   getRecentExpenses: readRecentExpenses = getRecentExpenses,
-  getSettings: readSettings = getSettings,
-  getTotalSpentInPeriod: readSpentInPeriod = getTotalSpentInPeriod,
-  getTotalSpentToday: readSpentToday = getTotalSpentToday,
 } = {}) {
-  const weeklyPeriod = getLatestClosedWeeklyPeriod({ now, timeZone });
-  const [settings, currentPeriodData] = await Promise.all([
-    readSettings({
-      initialWeeklyPeriodKey: weeklyPeriod.key,
-      initialMonthlyPeriodKey: getLatestClosedMonthlyPeriod({ now, timeZone }).key,
-    }),
+  const [currentPeriodData, recentExpenses] = await Promise.all([
     collectMonthData({
       now,
       timeZone,
       getBudgets: readBudgets,
       getExpensesInRange: readExpenses,
     }),
-  ]);
-  const payPeriodStart = getPeriodStart(now);
-  const daysElapsed = daysSincePeriodStart(now);
-  const daysRemaining = daysUntilPayday(now);
-  const [payPeriodSpent, todaySpent, recentExpenses] = await Promise.all([
-    readSpentInPeriod(payPeriodStart),
-    readSpentToday({ now }),
     readRecentExpenses(20),
   ]);
-  const dailyTarget = settings.dailyTarget;
-  const targetToDate = dailyTarget === null ? null : roundMoney(dailyTarget * daysElapsed);
-  const targetRemaining = targetToDate === null ? null : roundMoney(targetToDate - payPeriodSpent);
-  const pacePerDay = roundMoney(payPeriodSpent / daysElapsed);
-  const projectedEnd = roundMoney(pacePerDay * (daysElapsed + daysRemaining));
-  const targetProgress = targetToDate === null || targetToDate <= 0
-    ? null
-    : Math.max(0, Math.min(999, Math.round((payPeriodSpent / targetToDate) * 1000) / 10));
+  const month = currentPeriodData.months[0];
+  const daysElapsed = getDaysElapsedInMonth(now, timeZone, month.range.start);
+  const daysInMonth = month.range.days;
+  const daysRemaining = Math.max(0, daysInMonth - daysElapsed);
+  const averagePerDay = roundMoney(month.total / daysElapsed);
+  const projectedTotal = roundMoney(averagePerDay * daysInMonth);
   const budgetNames = currentPeriodData.budgetNames;
 
   return {
     generatedAt: now.toISOString(),
-    target: { daily: dailyTarget },
-    payPeriod: {
-      start: payPeriodStart.toISOString().slice(0, 10),
+    month: {
+      label: month.label,
+      total: month.total,
+      categories: month.categories,
       daysElapsed,
-      spent: payPeriodSpent,
-      today: todaySpent,
-      targetToDate,
-      remaining: targetRemaining,
+      daysInMonth,
       daysRemaining,
-      pacePerDay,
-      projectedEnd,
-      progress: targetProgress,
+      averagePerDay,
+      projectedTotal,
     },
-    currentMonth: currentPeriodData.months[0],
     months: currentPeriodData.months,
     recentExpenses: recentExpenses.map((expense) => ({
       ...expense,
@@ -180,13 +157,12 @@ function renderDashboardHTML() {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Trackiano Dashboard</title>
+  <title>Mes en curso</title>
   <style>
     :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif; }
     body { margin: 0; background: radial-gradient(circle at top, #111b33 0, #0b1020 42%, #070b16 100%); color: #e5e7eb; }
     main { max-width: 1100px; margin: 0 auto; padding: 20px; }
     .hero { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space-between; align-items: end; padding: 8px 0 6px; }
-    .eyebrow { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 999px; background: rgba(255, 95, 135, 0.12); color: #f9a8d4; font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
     h1 { margin: 0; font-size: clamp(28px, 4vw, 40px); }
     .muted { color: #94a3b8; }
     .summary, .legend { display: grid; gap: 14px; }
@@ -224,17 +200,16 @@ function renderDashboardHTML() {
   <main>
     <div class="hero">
       <div>
-        <div class="eyebrow">Dashboard en vivo</div>
-        <h1>Trackiano</h1>
+        <h1>Mes en curso</h1>
         <div class="muted" id="hero-meta">Resumen solo lectura dentro de Telegram</div>
       </div>
     </div>
 
     <div class="summary">
       <div class="card"><div class="muted">Mes actual</div><div class="metric" id="month-total">-</div><div class="muted" id="month-meta"></div></div>
-      <div class="card"><div class="muted">Hoy</div><div class="metric" id="today-spent">-</div><div class="muted" id="today-meta"></div></div>
-      <div class="card"><div class="muted">Proyección del mes</div><div class="metric" id="projected-end">-</div><div class="muted" id="projection-meta"></div></div>
-      <div class="card"><div class="muted">Restante vs meta</div><div class="metric" id="remaining">-</div><div class="muted" id="remaining-meta"></div><div class="progress"><span id="target-progress"></span></div></div>
+      <div class="card"><div class="muted">Promedio diario</div><div class="metric" id="avg-per-day">-</div><div class="muted" id="avg-meta"></div></div>
+      <div class="card"><div class="muted">Proyección del mes</div><div class="metric" id="projected-total">-</div><div class="muted" id="projection-meta"></div></div>
+      <div class="card"><div class="muted">Días restantes</div><div class="metric" id="days-remaining">-</div><div class="muted" id="days-meta"></div></div>
     </div>
 
     <div class="section">
@@ -338,24 +313,29 @@ function renderDashboardHTML() {
     function renderDonutChart(categories) {
       const chart = document.getElementById('category-chart');
       const legend = document.getElementById('category-legend');
-      const total = categories.reduce((sum, category) => sum + category.amount, 0);
       const visible = categories.filter((category) => category.amount > 0);
+      const total = visible.reduce((sum, category) => sum + category.amount, 0);
       const colors = ['#ff5f87', '#ff9f43', '#54a0ff', '#2ecc71', '#a55eea', '#f368e0', '#c8d6e5'];
       const centerX = 160;
       const centerY = 122;
       const outerRadius = 82;
       const innerRadius = 48;
+      const topCategories = visible.slice(0, 6);
+      const otherAmount = visible.slice(6).reduce((sum, category) => sum + category.amount, 0);
+      const chartCategories = otherAmount > 0
+        ? [...topCategories, { name: 'Otros', amount: otherAmount }]
+        : topCategories;
 
       chart.replaceChildren();
       legend.replaceChildren();
 
-      if (!visible.length || total <= 0) {
+      if (!chartCategories.length || total <= 0) {
         chart.innerHTML = '<text x="160" y="120" text-anchor="middle" class="donut-center">Sin datos</text>';
         return;
       }
 
       let angle = 0;
-      visible.forEach((category, index) => {
+      chartCategories.forEach((category, index) => {
         const share = category.amount / total;
         const nextAngle = angle + (share * 360);
         const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -388,7 +368,7 @@ function renderDashboardHTML() {
       subLabel.textContent = 'total';
       chart.appendChild(subLabel);
 
-      visible.forEach((category, index) => {
+      chartCategories.forEach((category, index) => {
         const item = document.createElement('div');
         item.className = 'legend-item';
         item.innerHTML = '<span class="swatch" style="background:' + colors[index % colors.length] + '"></span>' +
@@ -438,28 +418,16 @@ function renderDashboardHTML() {
     }
 
     function renderSummary(data) {
-      const currentMonth = data.currentMonth;
-      document.getElementById('hero-meta').textContent = 'Mes en curso · ' + currentMonth.label;
-      document.getElementById('today-spent').textContent = moneyText(data.payPeriod.today);
-      document.getElementById('today-meta').textContent = data.payPeriod.today === 0 ? 'Sin gastos hoy' : 'Gasto de la jornada';
-      document.getElementById('projected-end').textContent = moneyText(data.payPeriod.projectedEnd);
-      document.getElementById('projection-meta').textContent = 'Ritmo actual: ' + moneyText(data.payPeriod.pacePerDay) + ' por día · ' + data.payPeriod.daysRemaining + ' días restantes';
-      document.getElementById('remaining').textContent = data.payPeriod.remaining === null
-        ? '-'
-        : moneyText(data.payPeriod.remaining);
-      document.getElementById('remaining-meta').textContent = data.target.daily === null
-        ? 'Definí /target para comparar'
-        : moneyText(data.payPeriod.targetToDate) + ' esperado hasta hoy · ' + data.payPeriod.progress + '% de avance';
-      const targetProgress = document.getElementById('target-progress');
-      if (data.payPeriod.progress === null) {
-        targetProgress.style.width = '0%';
-        targetProgress.style.opacity = '0.35';
-      } else {
-        targetProgress.style.width = Math.min(data.payPeriod.progress, 100) + '%';
-        targetProgress.style.opacity = '1';
-      }
-      document.getElementById('month-total').textContent = moneyText(currentMonth.total);
-      document.getElementById('month-meta').textContent = currentMonth.label;
+      const month = data.month;
+      document.getElementById('hero-meta').textContent = month.label;
+      document.getElementById('month-total').textContent = moneyText(month.total);
+      document.getElementById('month-meta').textContent = month.daysElapsed + ' de ' + month.daysInMonth + ' días';
+      document.getElementById('avg-per-day').textContent = moneyText(month.averagePerDay);
+      document.getElementById('avg-meta').textContent = month.daysElapsed === 1 ? 'primer día del mes' : 'promedio real acumulado';
+      document.getElementById('projected-total').textContent = moneyText(month.projectedTotal);
+      document.getElementById('projection-meta').textContent = 'Ritmo actual';
+      document.getElementById('days-remaining').textContent = String(month.daysRemaining);
+      document.getElementById('days-meta').textContent = 'días restantes este mes';
 
       const expenses = document.getElementById('expenses');
       expenses.replaceChildren(...data.recentExpenses.slice(0, 6).map((expense) => {
@@ -474,8 +442,8 @@ function renderDashboardHTML() {
     }
 
     function renderCharts(data) {
-      const currentMonth = data.currentMonth;
-      renderDonutChart(currentMonth.categories.slice(0, 6));
+      const month = data.month;
+      renderDonutChart(month.categories);
       renderMonthlyChart([...data.months].reverse());
     }
 

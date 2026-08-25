@@ -54,28 +54,22 @@ test('builds dashboard data for the requested month and current totals', async (
       calls.push(['recent', limit]);
       return [{ id: '1', budgetId: 'food', description: 'Lunch', amount: 12, expenseDate: '2026-11-24' }];
     },
-    getTotalSpentInPeriod: async (periodStart) => {
-      calls.push(['period', periodStart.toISOString().slice(0, 10)]);
-      return 30;
-    },
-    getTotalSpentToday: async ({ now }) => {
-      calls.push(['today', now.toISOString().slice(0, 10)]);
-      return 8.5;
-    },
   });
 
-  assert.equal(data.payPeriod.spent, 30);
-  assert.equal(data.payPeriod.today, 8.5);
+  assert.equal(data.month.total, 80);
+  assert.equal(data.month.daysElapsed, 24);
+  assert.equal(data.month.daysInMonth, 30);
+  assert.equal(data.month.daysRemaining, 6);
+  assert.equal(data.month.averagePerDay, 3.33);
   assert.equal(
-    data.payPeriod.projectedEnd,
-    Math.round(((data.payPeriod.spent / data.payPeriod.daysElapsed) * (data.payPeriod.daysElapsed + data.payPeriod.daysRemaining)) * 100) / 100,
+    data.month.projectedTotal,
+    Math.round((data.month.averagePerDay * data.month.daysInMonth) * 100) / 100,
   );
-  assert.equal(data.payPeriod.progress, 12.5);
-  assert.equal(data.currentMonth.label, expectedMonthLabel);
+  assert.equal(data.month.label, expectedMonthLabel);
   assert.equal(data.recentExpenses[0].name, 'Food');
   assert.equal(calls.filter(([type]) => type === 'range').length, 3);
-  assert.deepEqual(calls.at(-2), ['today', '2026-11-24']);
-  assert.deepEqual(calls.at(-1), ['recent', 20]);
+  assert.equal(calls.filter(([type]) => type === 'recent').length, 1);
+  assert.deepEqual(calls.find(([type]) => type === 'recent'), ['recent', 20]);
 });
 
 test('caches dashboard data briefly at the HTTP layer', async () => {
@@ -90,20 +84,7 @@ test('caches dashboard data briefly at the HTTP layer', async () => {
       calls += 1;
       return {
         generatedAt: new Date().toISOString(),
-        target: { daily: null },
-        payPeriod: {
-          start: '2026-11-01',
-          daysElapsed: 1,
-          spent: 0,
-          today: 0,
-          targetToDate: null,
-          remaining: null,
-          daysRemaining: 1,
-          pacePerDay: 0,
-          projectedEnd: 0,
-          progress: null,
-        },
-        currentMonth: { label: 'Nov 2026', total: 0, categories: [] },
+        month: { label: 'Nov 2026', total: 0, categories: [], daysElapsed: 1, daysInMonth: 30, daysRemaining: 29, averagePerDay: 0, projectedTotal: 0 },
         months: [],
         recentExpenses: [],
       };

@@ -358,14 +358,7 @@ export async function handleDashboardCommand(ctx, {
   if (!webAppUrl.trim()) {
     return ctx.reply("WEB_APP_URL is not configured.");
   }
-  return ctx.reply("Open the dashboard:", {
-    reply_markup: {
-      inline_keyboard: [[{
-        text: "Open dashboard",
-        web_app: { url: webAppUrl },
-      }]],
-    },
-  });
+  return ctx.reply(`Open the dashboard: ${webAppUrl}`);
 }
 
 bot.command("dashboard", handleDashboardCommand);
