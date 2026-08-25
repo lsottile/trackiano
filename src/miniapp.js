@@ -30,7 +30,7 @@ function resolveWebAppPort(port = null) {
 
 function formatMonthLabel(isoDate, timeZone) {
   return new Intl.DateTimeFormat('en-US', { month: 'short', year: 'numeric', timeZone })
-    .format(new Date(`${isoDate}-01T00:00:00.000Z`));
+    .format(new Date(`${isoDate}-15T12:00:00.000Z`));
 }
 
 function buildDataCheckString(initData) {
@@ -166,12 +166,12 @@ function renderDashboardHTML() {
     h1 { margin: 0; font-size: clamp(28px, 4vw, 40px); }
     .muted { color: #94a3b8; }
     .summary, .legend { display: grid; gap: 14px; }
-    .summary { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin: 24px 0 18px; }
+    .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 24px 0 18px; }
     .card, .expense { background: rgba(15, 23, 42, 0.92); border: 1px solid rgba(148, 163, 184, 0.16); border-radius: 22px; box-shadow: 0 16px 34px rgba(0, 0, 0, 0.22); }
-    .card { padding: 18px; }
-    .metric { font-size: 30px; font-weight: 800; margin-top: 8px; letter-spacing: -0.02em; }
-    .metric.small { font-size: 22px; }
-    .progress { height: 10px; margin-top: 12px; border-radius: 999px; background: rgba(148, 163, 184, 0.12); overflow: hidden; }
+    .card { padding: 16px; }
+    .metric { font-size: 26px; font-weight: 800; margin-top: 8px; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+    .metric.small { font-size: 20px; }
+    .progress { height: 8px; margin-top: 10px; border-radius: 999px; background: rgba(148, 163, 184, 0.12); overflow: hidden; }
     .progress > span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #ff5f87, #ff9f43); box-shadow: 0 0 18px rgba(255, 95, 135, 0.24); }
     .section { margin-top: 24px; }
     .section h2 { margin: 0 0 12px; font-size: 20px; letter-spacing: -0.01em; }
@@ -192,7 +192,20 @@ function renderDashboardHTML() {
     .chip { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; background: rgba(148, 163, 184, 0.12); color: #e2e8f0; font-size: 12px; font-weight: 600; }
     .donut-center { font-size: 20px; font-weight: 800; fill: #f8fafc; }
     .donut-sub { font-size: 11px; fill: #94a3b8; }
-    @media (max-width: 640px) { main { padding: 14px; } .hero { align-items: start; } }
+    @media (max-width: 640px) {
+      main { padding: 12px; }
+      .hero { align-items: start; }
+      .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 16px 0 12px; }
+      .card, .expense, .chart-card { border-radius: 18px; }
+      .card, .chart-card { padding: 11px; }
+      .metric { font-size: 20px; margin-top: 4px; }
+      .card .muted { font-size: 12px; }
+      .section { margin-top: 18px; }
+      .section h2 { font-size: 18px; margin-bottom: 10px; }
+      .legend { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+      .legend-item { gap: 8px; font-size: 13px; }
+      .chart-wrap { padding-bottom: 2px; }
+    }
   </style>
 </head>
 <body>
@@ -272,6 +285,10 @@ function renderDashboardHTML() {
         ? new Date(raw + 'T00:00:00.000Z')
         : new Date(raw);
       return Number.isNaN(date.getTime()) ? 'Sin fecha' : dateFormat.format(date);
+    }
+
+    function formatMonthLabel(value) {
+      return new Intl.DateTimeFormat('en-US', { month: 'short', year: 'numeric' }).format(new Date(value));
     }
 
     function percentText(value) {
@@ -419,9 +436,10 @@ function renderDashboardHTML() {
 
     function renderSummary(data) {
       const month = data.month;
-      document.getElementById('hero-meta').textContent = month.label;
+      const displayedMonthLabel = formatMonthLabel(data.generatedAt);
+      document.getElementById('hero-meta').textContent = displayedMonthLabel;
       document.getElementById('month-total').textContent = moneyText(month.total);
-      document.getElementById('month-meta').textContent = month.daysElapsed + ' de ' + month.daysInMonth + ' días';
+      document.getElementById('month-meta').textContent = displayedMonthLabel + ' · ' + month.daysElapsed + ' de ' + month.daysInMonth + ' días';
       document.getElementById('avg-per-day').textContent = moneyText(month.averagePerDay);
       document.getElementById('avg-meta').textContent = month.daysElapsed === 1 ? 'primer día del mes' : 'promedio real acumulado';
       document.getElementById('projected-total').textContent = moneyText(month.projectedTotal);
