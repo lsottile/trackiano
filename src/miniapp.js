@@ -6,6 +6,7 @@ import { formatDateInTimeZone, getCalendarMonthPeriod } from './periods.js';
 import {
   getBudgets,
   getExpensesInRange,
+  getMonthlyExpenseDetails,
   getRecentExpenses,
 } from './storage.js';
 import { roundMoney } from './money.js';
@@ -112,15 +113,17 @@ export async function buildDashboardData({
   timeZone = process.env.APP_TIMEZONE ?? 'UTC',
   getBudgets: readBudgets = getBudgets,
   getExpensesInRange: readExpenses = getExpensesInRange,
+  getMonthlyExpenseDetails: readMonthlyExpenseDetails = getMonthlyExpenseDetails,
   getRecentExpenses: readRecentExpenses = getRecentExpenses,
 } = {}) {
-  const [currentPeriodData, recentExpenses] = await Promise.all([
+  const [currentPeriodData, monthlyExpenseDetails, recentExpenses] = await Promise.all([
     collectMonthData({
       now,
       timeZone,
       getBudgets: readBudgets,
       getExpensesInRange: readExpenses,
     }),
+    readMonthlyExpenseDetails({ now }),
     readRecentExpenses(20),
   ]);
   const month = currentPeriodData.months[0];
@@ -130,6 +133,14 @@ export async function buildDashboardData({
   const averagePerDay = roundMoney(month.total / daysElapsed);
   const projectedTotal = roundMoney(averagePerDay * daysInMonth);
   const budgetNames = currentPeriodData.budgetNames;
+  const extraordinaryExpenses = monthlyExpenseDetails
+    .filter((expense) => expense.amount > 100)
+    .sort((left, right) => right.amount - left.amount || right.expenseDate.localeCompare(left.expenseDate))
+    .slice(0, 5)
+    .map((expense) => ({
+      ...expense,
+      name: budgetNames[expense.budgetId] ?? expense.budgetId,
+    }));
 
   return {
     generatedAt: now.toISOString(),
@@ -143,6 +154,7 @@ export async function buildDashboardData({
       averagePerDay,
       projectedTotal,
     },
+    extraordinaryExpenses,
     months: currentPeriodData.months,
     recentExpenses: recentExpenses.map((expense) => ({
       ...expense,
@@ -243,12 +255,8 @@ function renderDashboardHTML() {
     </div>
 
     <div class="section">
-      <h2>Progreso mensual</h2>
-      <div class="card chart-card">
-        <div class="chart-wrap">
-          <svg id="monthly-chart" class="chart" viewBox="0 0 320 220" role="img" aria-label="Progreso mensual"></svg>
-        </div>
-      </div>
+      <h2>Gastos extraordinarios</h2>
+      <div class="card expense-list" id="extraordinary-expenses"></div>
     </div>
   </main>
 
@@ -270,14 +278,6 @@ function renderDashboardHTML() {
         currency: 'USD',
         maximumFractionDigits: 0,
       }).format(value ?? 0);
-    }
-
-    function scheduleFrame(callback) {
-      if (window.requestAnimationFrame) {
-        window.requestAnimationFrame(() => callback());
-        return;
-      }
-      setTimeout(callback, 0);
     }
 
     function formatExpenseDate(value) {
@@ -396,46 +396,6 @@ function renderDashboardHTML() {
       });
     }
 
-    function renderMonthlyChart(months) {
-      const chart = document.getElementById('monthly-chart');
-      const width = 320;
-      const height = 220;
-      const padding = { top: 20, right: 16, bottom: 38, left: 36 };
-      const plotWidth = width - padding.left - padding.right;
-      const plotHeight = height - padding.top - padding.bottom;
-      const values = months.map((month) => month.total);
-      const maxValue = Math.max(1, ...values);
-      const step = values.length > 1 ? plotWidth / (values.length - 1) : 0;
-      const points = values.map((value, index) => {
-        const x = padding.left + (step * index);
-        const y = padding.top + plotHeight - ((value / maxValue) * plotHeight);
-        return { x, y, value };
-      });
-
-      const grid = [];
-      for (let tick = 0; tick <= 4; tick += 1) {
-        const y = padding.top + (plotHeight / 4) * tick;
-        const value = maxValue - ((maxValue / 4) * tick);
-        grid.push('<line x1="' + padding.left + '" y1="' + y + '" x2="' + (width - padding.right) + '" y2="' + y + '" stroke="rgba(148,163,184,0.14)" />');
-        grid.push('<text x="10" y="' + (y + 4) + '" fill="#94a3b8" font-size="11">' + moneyCompact(value) + '</text>');
-      }
-
-      const polyline = points.map((point) => String(point.x) + ',' + String(point.y)).join(' ');
-      const labels = points.map((point, index) => {
-        const month = months[index];
-        return '<text x="' + point.x + '" y="' + (height - 16) + '" text-anchor="middle" fill="#94a3b8" font-size="11">' +
-          escapeHtml(month.label.split(' ')[0]) + '</text>';
-      }).join('');
-
-      chart.innerHTML = [
-        '<rect x="0" y="0" width="' + width + '" height="' + height + '" fill="transparent" />',
-        grid.join(''),
-        '<polyline points="' + polyline + '" fill="none" stroke="#ff5f87" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" />',
-        points.map((point) => '<circle cx="' + point.x + '" cy="' + point.y + '" r="4" fill="#ff5f87" />').join(''),
-        labels,
-      ].join('');
-    }
-
     function renderSummary(data) {
       const month = data.month;
       const displayedMonthLabel = formatMonthLabel(data.generatedAt);
@@ -459,17 +419,22 @@ function renderDashboardHTML() {
           escapeHtml(formatExpenseDate(expense.expenseDate)) + '</span></div>';
         return item;
       }));
-    }
 
-    function renderCharts(data) {
-      const month = data.month;
-      renderDonutChart(month.categories);
-      renderMonthlyChart([...data.months].reverse());
+      const extraordinaryExpenses = document.getElementById('extraordinary-expenses');
+      extraordinaryExpenses.replaceChildren(...data.extraordinaryExpenses.map((expense) => {
+        const item = document.createElement('article');
+        item.className = 'expense';
+        item.innerHTML = '<div class="expense-row"><strong>' + escapeHtml(expense.description) + '</strong><span>' +
+          moneyText(expense.amount) + '</span></div><div class="expense-meta"><span class="chip">' +
+          escapeHtml(expense.name) + '</span><span>' +
+          escapeHtml(formatExpenseDate(expense.expenseDate)) + '</span></div>';
+        return item;
+      }));
     }
 
     function renderDashboard(data) {
       renderSummary(data);
-      scheduleFrame(() => renderCharts(data));
+      renderDonutChart(data.month.categories);
     }
 
     async function refresh() {

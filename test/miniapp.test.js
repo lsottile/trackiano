@@ -54,6 +54,15 @@ test('builds dashboard data for the requested month and current totals', async (
       calls.push(['recent', limit]);
       return [{ id: '1', budgetId: 'food', description: 'Lunch', amount: 12, expenseDate: '2026-11-24' }];
     },
+    getMonthlyExpenseDetails: async () => ([
+      { id: 'a', budgetId: 'food', description: 'Flight', amount: 150, expenseDate: '2026-11-22' },
+      { id: 'b', budgetId: 'food', description: 'Dinner', amount: 80, expenseDate: '2026-11-23' },
+      { id: 'c', budgetId: 'food', description: 'Hotel', amount: 250, expenseDate: '2026-11-21' },
+      { id: 'd', budgetId: 'food', description: 'Taxi', amount: 110, expenseDate: '2026-11-20' },
+      { id: 'e', budgetId: 'food', description: 'Train', amount: 140, expenseDate: '2026-11-19' },
+      { id: 'f', budgetId: 'food', description: 'Lunch', amount: 101, expenseDate: '2026-11-18' },
+      { id: 'g', budgetId: 'food', description: 'Coffee', amount: 10, expenseDate: '2026-11-17' },
+    ]),
   });
 
   assert.equal(data.month.total, 80);
@@ -66,6 +75,10 @@ test('builds dashboard data for the requested month and current totals', async (
     Math.round((data.month.averagePerDay * data.month.daysInMonth) * 100) / 100,
   );
   assert.equal(data.month.label, expectedMonthLabel);
+  assert.deepEqual(
+    data.extraordinaryExpenses.map((expense) => expense.description),
+    ['Hotel', 'Flight', 'Train', 'Taxi', 'Lunch'],
+  );
   assert.equal(data.recentExpenses[0].name, 'Food');
   assert.equal(calls.filter(([type]) => type === 'range').length, 3);
   assert.equal(calls.filter(([type]) => type === 'recent').length, 1);
