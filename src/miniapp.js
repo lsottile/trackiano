@@ -198,6 +198,8 @@ function renderDashboardHTML() {
       .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 16px 0 12px; }
       .card, .expense, .chart-card { border-radius: 18px; }
       .card, .chart-card { padding: 11px; }
+      .expense-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+      .expense { padding: 10px; }
       .metric { font-size: 20px; margin-top: 4px; }
       .card .muted { font-size: 12px; }
       .section { margin-top: 18px; }
