@@ -39,26 +39,32 @@ test('builds dashboard data with the extraordinary filter applied everywhere', a
   const data = await buildDashboardData({
     now: new Date('2026-08-24T12:00:00.000Z'),
     timeZone: 'UTC',
-    maxAmount: 100,
     getBudgets: async () => [{ id: 'food', name: 'Food' }],
     getSettings: async () => ({ id: 'settings', dailyTarget: 10, attemptedWeeklyPeriod: '', attemptedMonthlyPeriod: '' }),
-    getExpensesInRange: async (start, end, options) => {
-      calls.push(['range', start, end, options]);
+    getExpensesInRange: async (start, end) => {
+      calls.push(['range', start, end]);
       return { food: 80 };
     },
-    getRecentExpenses: async (limit, options) => {
-      calls.push(['recent', limit, options]);
+    getRecentExpenses: async (limit) => {
+      calls.push(['recent', limit]);
       return [{ id: '1', budgetId: 'food', description: 'Lunch', amount: 12, expenseDate: '2026-08-24' }];
     },
-    getTotalSpentInPeriod: async (periodStart, options) => {
-      calls.push(['period', periodStart.toISOString().slice(0, 10), options]);
+    getTotalSpentInPeriod: async (periodStart) => {
+      calls.push(['period', periodStart.toISOString().slice(0, 10)]);
       return 30;
+    },
+    getTotalSpentToday: async ({ now }) => {
+      calls.push(['today', now.toISOString().slice(0, 10)]);
+      return 8.5;
     },
   });
 
-  assert.equal(data.filter.maxAmount, 100);
   assert.equal(data.payPeriod.spent, 30);
+  assert.equal(data.payPeriod.today, 8.5);
+  assert.equal(data.payPeriod.projectedEnd, 38.75);
+  assert.equal(data.payPeriod.progress, 12.5);
   assert.equal(data.recentExpenses[0].name, 'Food');
   assert.equal(calls.filter(([type]) => type === 'range').length, 6);
-  assert.deepEqual(calls.at(-1), ['recent', 20, { maxAmount: 100 }]);
+  assert.deepEqual(calls.at(-2), ['today', '2026-08-24']);
+  assert.deepEqual(calls.at(-1), ['recent', 20]);
 });
