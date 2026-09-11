@@ -55,13 +55,13 @@ test('builds dashboard data for the requested month and current totals', async (
       return [{ id: '1', budgetId: 'food', description: 'Lunch', amount: 12, expenseDate: '2026-11-24' }];
     },
     getMonthlyExpenseDetails: async () => ([
-      { id: 'a', budgetId: 'food', description: 'Flight', amount: 150, expenseDate: '2026-11-22' },
-      { id: 'b', budgetId: 'food', description: 'Dinner', amount: 80, expenseDate: '2026-11-23' },
-      { id: 'c', budgetId: 'food', description: 'Hotel', amount: 250, expenseDate: '2026-11-21' },
-      { id: 'd', budgetId: 'food', description: 'Taxi', amount: 110, expenseDate: '2026-11-20' },
-      { id: 'e', budgetId: 'food', description: 'Train', amount: 140, expenseDate: '2026-11-19' },
-      { id: 'f', budgetId: 'food', description: 'Lunch', amount: 101, expenseDate: '2026-11-18' },
-      { id: 'g', budgetId: 'food', description: 'Coffee', amount: 10, expenseDate: '2026-11-17' },
+      { id: 'a', budgetId: 'food', description: 'Flight', amount: 150, expenseDate: '2026-11-22', isExtraordinary: false },
+      { id: 'b', budgetId: 'food', description: 'Dinner', amount: 80, expenseDate: '2026-11-23', isExtraordinary: false },
+      { id: 'c', budgetId: 'food', description: 'Hotel', amount: 250, expenseDate: '2026-11-21', isExtraordinary: true },
+      { id: 'd', budgetId: 'food', description: 'Taxi', amount: 110, expenseDate: '2026-11-20', isExtraordinary: false },
+      { id: 'e', budgetId: 'food', description: 'Train', amount: 140, expenseDate: '2026-11-19', isExtraordinary: true },
+      { id: 'f', budgetId: 'food', description: 'Lunch', amount: 101, expenseDate: '2026-11-18', isExtraordinary: false },
+      { id: 'g', budgetId: 'food', description: 'Coffee', amount: 10, expenseDate: '2026-11-17', isExtraordinary: false },
     ]),
   });
 
@@ -77,7 +77,7 @@ test('builds dashboard data for the requested month and current totals', async (
   assert.equal(data.month.label, expectedMonthLabel);
   assert.deepEqual(
     data.extraordinaryExpenses.map((expense) => expense.description),
-    ['Hotel', 'Flight', 'Train', 'Taxi', 'Lunch'],
+    ['Hotel', 'Train'],
   );
   assert.equal(data.recentExpenses[0].name, 'Food');
   assert.equal(calls.filter(([type]) => type === 'range').length, 3);

@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { pathToFileURL } from "node:url";
+import { randomUUID } from "node:crypto";
 import { Api, Bot, Composer } from "grammy";
 import { inferCategory, selectTopCandidate } from "./inferCategory.js";
 import { parseMessage } from "./parseMessage.js";
@@ -17,6 +18,7 @@ import {
   getPeriodSpent,
   createBudget,
   deleteExpense,
+  markExpenseExtraordinary,
   findLearnedBudget,
   recategorizeExpenseAndLearn,
   createExpenseIfNew,
@@ -41,6 +43,7 @@ if (isDirectExecution) { assertRuntimeAndBackend(); assertRuntimeEnvironment(); 
 
 const OWNER_ID = Number(process.env.TELEGRAM_OWNER_ID);
 const bot = new Composer();
+const pendingExtraordinaryExpenseConfirmations = new Map();
 
 function resolveWebAppPort() {
   const candidates = [
@@ -87,7 +90,7 @@ export function decodeExpenseCallback(data) {
   const [prefix, action, expense, budget, ...extra] = data.split(".");
   if (
     prefix !== "ex" ||
-    !["recategorize", "set-category", "delete"].includes(action) ||
+    !["recategorize", "set-category", "mark-extraordinary", "delete"].includes(action) ||
     extra.length ||
     !expense ||
     (action === "set-category") !== Boolean(budget)
@@ -96,6 +99,35 @@ export function decodeExpenseCallback(data) {
   const budgetId = budget ? decodeId(budget) : null;
   if (!expenseId || (budget && !budgetId)) return null;
   return { action, expenseId, budgetId };
+}
+
+function expenseActionKeyboard(expenseId, { isExtraordinary = false } = {}) {
+  const buttons = [{
+    text: "Cambiar categoría",
+    callback_data: encodeExpenseCallback("recategorize", expenseId),
+  }];
+  if (!isExtraordinary) {
+    buttons.push({
+      text: "Marcar como extraordinario",
+      callback_data: encodeExpenseCallback("mark-extraordinary", expenseId),
+    });
+  }
+  buttons.push({
+    text: "Eliminar",
+    callback_data: encodeExpenseCallback("delete", expenseId),
+  });
+  return { reply_markup: { inline_keyboard: [buttons] } };
+}
+
+export function encodeExtraordinaryExpenseCallback(action, confirmationId) {
+  return ["xe", action, encodeId(confirmationId)].join(".");
+}
+
+export function decodeExtraordinaryExpenseCallback(data) {
+  const [prefix, action, confirmation, ...extra] = data.split(".");
+  if (prefix !== "xe" || !["confirm", "decline"].includes(action) || extra.length || !confirmation) return null;
+  const confirmationId = decodeId(confirmation);
+  return confirmationId ? { action, confirmationId } : null;
 }
 
 export function encodeMerchantCallback(action, sourceId, budgetId) {
@@ -223,6 +255,7 @@ export function registerMerchantMappingHandlers(composer, {
 export function registerExpenseActionHandlers(composer, {
   getBudgets: readBudgets = getBudgets,
   deleteExpense: removeExpense = deleteExpense,
+  markExpenseExtraordinary: markExtraordinary = markExpenseExtraordinary,
   recategorizeExpenseAndLearn: changeExpenseBudget = recategorizeExpenseAndLearn,
   reportOperation = defaultOperationReporter,
 } = {}) {
@@ -235,6 +268,14 @@ export function registerExpenseActionHandlers(composer, {
       if (callback.action === "delete") {
         await removeExpense(callback.expenseId);
         return ctx.reply("Gasto eliminado ✓");
+      }
+
+      if (callback.action === "mark-extraordinary") {
+        await markExtraordinary(callback.expenseId);
+        await ctx.editMessageReplyMarkup?.(expenseActionKeyboard(callback.expenseId, {
+          isExtraordinary: true,
+        }));
+        return ctx.reply("Gasto marcado como extraordinario ✓");
       }
 
       const budgets = await readBudgets();
@@ -268,11 +309,43 @@ export function registerExpenseActionHandlers(composer, {
   });
 }
 
+export function registerExtraordinaryExpenseConfirmationHandlers(composer, {
+  createExpenseAndGetTotalToday: writeExpense = createExpenseAndGetTotalToday,
+  reportOperation = defaultOperationReporter,
+} = {}) {
+  return composer.on("callback_query:data", async (ctx, next) => {
+    const callback = decodeExtraordinaryExpenseCallback(ctx.callbackQuery.data);
+    if (!callback) return next();
+    await ctx.answerCallbackQuery?.();
+
+    const pending = pendingExtraordinaryExpenseConfirmations.get(callback.confirmationId);
+    if (!pending || pending.processing) return ctx.reply("Esta confirmación ya no está disponible.");
+
+    pending.processing = true;
+    try {
+      const { expenseId, totalToday } = await writeExpense({
+        ...pending.expense,
+        isExtraordinary: callback.action === "confirm",
+      });
+      pendingExtraordinaryExpenseConfirmations.delete(callback.confirmationId);
+      return ctx.reply(
+        `Cargado ✓\nLlevás $${formatMoney(totalToday)} hoy`,
+        expenseActionKeyboard(expenseId, { isExtraordinary: callback.action === "confirm" }),
+      );
+    } catch {
+      pending.processing = false;
+      await reportFailure(reportOperation, "extraordinary_expense_write");
+      return ctx.reply("Something went wrong, try again.");
+    }
+  });
+}
+
 bot.use((ctx, next) => {
   if (ctx.from?.id !== OWNER_ID) return ctx.reply("Unauthorized");
   return next();
 });
 registerExpenseActionHandlers(bot);
+registerExtraordinaryExpenseConfirmationHandlers(bot);
 registerMerchantMappingHandlers(bot);
 
 bot.command("help", async (ctx) => {
@@ -475,6 +548,24 @@ export async function handleExpenseMessage(ctx, {
       }
     }
 
+    const categoryName = category ?? inferredCategoryName;
+    const isInvestment = categoryName?.toLowerCase() === "investments";
+    if (amount > 150 && !isInvestment) {
+      const confirmationId = randomUUID();
+      pendingExtraordinaryExpenseConfirmations.set(confirmationId, {
+        expense: { description, amount, budgetId },
+        processing: false,
+      });
+      return ctx.reply("¿Es un gasto extraordinario?", {
+        reply_markup: {
+          inline_keyboard: [[
+            { text: "Sí", callback_data: encodeExtraordinaryExpenseCallback("confirm", confirmationId) },
+            { text: "No", callback_data: encodeExtraordinaryExpenseCallback("decline", confirmationId) },
+          ]],
+        },
+      });
+    }
+
     let expenseId;
     let totalToday;
     try {
@@ -482,6 +573,7 @@ export async function handleExpenseMessage(ctx, {
         description,
         amount,
         budgetId,
+        isExtraordinary: isInvestment,
       }));
     } catch {
       await reportFailure(reportOperation, "expense_write");
@@ -492,20 +584,7 @@ export async function handleExpenseMessage(ctx, {
       : "";
     return ctx.reply(
       `Cargado ✓${categoryLine}\nLlevás $${formatMoney(totalToday)} hoy`,
-      {
-        reply_markup: {
-          inline_keyboard: [[
-            {
-              text: "Cambiar",
-              callback_data: encodeExpenseCallback("recategorize", expenseId),
-            },
-            {
-              text: "Eliminar",
-              callback_data: encodeExpenseCallback("delete", expenseId),
-            },
-          ]],
-        },
-      },
+      expenseActionKeyboard(expenseId, { isExtraordinary: isInvestment }),
     );
   } catch (err) {
     if (

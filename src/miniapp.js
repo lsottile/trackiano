@@ -134,7 +134,7 @@ export async function buildDashboardData({
   const projectedTotal = roundMoney(averagePerDay * daysInMonth);
   const budgetNames = currentPeriodData.budgetNames;
   const extraordinaryExpenses = monthlyExpenseDetails
-    .filter((expense) => expense.amount > 100)
+    .filter((expense) => expense.isExtraordinary)
     .sort((left, right) => right.amount - left.amount || right.expenseDate.localeCompare(left.expenseDate))
     .slice(0, 5)
     .map((expense) => ({

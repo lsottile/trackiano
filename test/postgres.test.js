@@ -51,7 +51,7 @@ test('returns only owner-scoped budgets and maps numeric money values', async ()
 test('creates a cent-rounded expense on the app-local calendar date', async () => {
   const database = fakeDatabase((sql, params) => {
     if (sql.startsWith('INSERT INTO expenses')) {
-      assert.deepEqual(params, [userId, budgetId, 'Coffee', 10.01, '2026-07-19', null]);
+      assert.deepEqual(params, [userId, budgetId, 'Coffee', 10.01, '2026-07-19', false, null]);
       return { rows: [{ id: expenseId }], rowCount: 1 };
     }
   });
@@ -68,6 +68,105 @@ test('creates a cent-rounded expense on the app-local calendar date', async () =
   }), expenseId);
 });
 
+test('marks a lowercase investments category extraordinary at persistence', async () => {
+  const database = fakeDatabase((sql, params) => {
+    if (sql.startsWith('INSERT INTO expenses')) {
+      assert.match(sql, /lower\(name\) = 'investments'/);
+      assert.deepEqual(params, [userId, budgetId, 'Index fund', 200, '2026-07-19', false, null]);
+      return { rows: [{ id: expenseId }], rowCount: 1 };
+    }
+  });
+  const repository = createPostgresRepository(database, {
+    telegramUserId: 42,
+    timeZone: 'America/Guatemala',
+  });
+
+  assert.equal(await repository.createExpense({
+    description: 'Index fund',
+    amount: 200,
+    budgetId,
+    now: new Date('2026-07-20T05:30:00.000Z'),
+  }), expenseId);
+});
+
+test('excludes extraordinary expenses from category consumption totals', async () => {
+  const database = fakeDatabase((sql, params) => {
+    if (sql.startsWith('INSERT INTO expenses')) {
+      assert.deepEqual(params, [userId, budgetId, 'Index fund', 200, '2026-07-19', true, null]);
+      return { rows: [{ id: expenseId }], rowCount: 1 };
+    }
+    if (sql.includes('GROUP BY budget_id')) return { rows: [], rowCount: 1 };
+    if (sql.includes('SUM(amount)') && sql.includes('budget_id = $2')) {
+      return { rows: [{ total: '0.00' }], rowCount: 1 };
+    }
+  });
+  const repository = createPostgresRepository(database, {
+    telegramUserId: 42,
+    timeZone: 'America/Guatemala',
+  });
+
+  await repository.createExpense({
+    description: 'Index fund',
+    amount: 200,
+    budgetId,
+    isExtraordinary: true,
+    now: new Date('2026-07-20T05:30:00.000Z'),
+  });
+  await repository.getExpensesInRange('2026-07-01', '2026-08-01');
+  assert.equal(await repository.getPeriodSpent(budgetId, new Date('2026-07-01T00:00:00.000Z')), 0);
+
+  const consumptionQuery = database.calls.find(({ sql }) => sql.includes('GROUP BY budget_id'));
+  assert.match(consumptionQuery.sql, /is_extraordinary = FALSE/);
+  const categoryConsumptionQuery = database.calls.find(({ sql }) => sql.includes('SUM(amount)') && sql.includes('budget_id = \$2'));
+  assert.match(categoryConsumptionQuery.sql, /is_extraordinary = FALSE/);
+});
+
+test('does not add an extraordinary expense to todays consumption total', async () => {
+  const database = fakeDatabase((sql) => {
+    if (sql.includes('SUM(amount)') && sql.includes('expense_date = $2')) {
+      return { rows: [{ total: '75.00' }], rowCount: 1 };
+    }
+    if (sql.startsWith('INSERT INTO expenses')) {
+      return { rows: [{ id: expenseId, is_extraordinary: true }], rowCount: 1 };
+    }
+  });
+  const repository = createPostgresRepository(database, {
+    telegramUserId: 42,
+    timeZone: 'America/Guatemala',
+  });
+
+  assert.deepEqual(await repository.createExpenseAndGetTotalToday({
+    description: 'Index fund',
+    amount: 200,
+    budgetId,
+    isExtraordinary: true,
+    now: new Date('2026-07-20T05:30:00.000Z'),
+  }), { expenseId, totalToday: 75 });
+});
+
+test('does not add an Investments expense resolved as extraordinary to todays consumption total', async () => {
+  const database = fakeDatabase((sql) => {
+    if (sql.includes('SUM(amount)') && sql.includes('expense_date = $2')) {
+      return { rows: [{ total: '75.00' }], rowCount: 1 };
+    }
+    if (sql.startsWith('INSERT INTO expenses')) {
+      assert.match(sql, /lower\(name\) = 'investments'/);
+      return { rows: [{ id: expenseId, is_extraordinary: true }], rowCount: 1 };
+    }
+  });
+  const repository = createPostgresRepository(database, {
+    telegramUserId: 42,
+    timeZone: 'America/Guatemala',
+  });
+
+  assert.deepEqual(await repository.createExpenseAndGetTotalToday({
+    description: 'Index fund',
+    amount: 200,
+    budgetId,
+    now: new Date('2026-07-20T05:30:00.000Z'),
+  }), { expenseId, totalToday: 75 });
+});
+
 test('changes or soft-deletes only the owners exact expense', async () => {
   const database = fakeDatabase((sql) => {
     if (sql.startsWith('UPDATE expenses')) return { rows: [], rowCount: 1 };
@@ -82,6 +181,26 @@ test('changes or soft-deletes only the owners exact expense', async () => {
   assert.deepEqual(updates[0].params, [expenseId, budgetId, userId]);
   assert.match(updates[1].sql, /deleted_at IS NULL/);
   assert.deepEqual(updates[1].params, [expenseId, userId]);
+});
+
+test('marks only the owners active expense extraordinary and excludes it from consumption', async () => {
+  const database = fakeDatabase((sql) => {
+    if (sql.startsWith('UPDATE expenses')) return { rows: [], rowCount: 1 };
+    if (sql.includes('SUM(amount)') && sql.includes('budget_id = $2')) {
+      return { rows: [{ total: '0.00' }], rowCount: 1 };
+    }
+  });
+  const repository = createPostgresRepository(database, { telegramUserId: 42 });
+
+  await repository.markExpenseExtraordinary(expenseId);
+  assert.equal(await repository.getPeriodSpent(budgetId, new Date('2026-07-01T00:00:00.000Z')), 0);
+
+  const update = database.calls.find(({ sql }) => sql.startsWith('UPDATE expenses'));
+  assert.match(update.sql, /SET is_extraordinary = TRUE/);
+  assert.match(update.sql, /WHERE id = \$1 AND user_id = \$2 AND deleted_at IS NULL/);
+  assert.deepEqual(update.params, [expenseId, userId]);
+  const consumption = database.calls.find(({ sql }) => sql.includes('SUM(amount)') && sql.includes('budget_id = $2'));
+  assert.match(consumption.sql, /is_extraordinary = FALSE/);
 });
 
 test('claims a summary period only when the conditional update returns a row', async () => {
@@ -143,9 +262,11 @@ test('rejects invalid fingerprints before any database query and returns null on
   assert.equal(await repository.findLearnedBudget('b'.repeat(64)), null);
 });
 
-test('recategorizes and learns from the persisted description in one ordered transaction', async () => {
+test('recategorizing to Investments marks only the owners active expense extraordinary and learns in one transaction', async () => {
   const database = fakeDatabase((sql) => {
-    if (sql.startsWith('SELECT e.description')) return { rows: [{ description: '  Coffee\tShop ' }], rowCount: 1 };
+    if (sql.startsWith('SELECT e.description')) {
+      return { rows: [{ description: '  Coffee\tShop ', is_extraordinary: true }], rowCount: 1 };
+    }
     if (sql.startsWith('UPDATE expenses')) return { rows: [], rowCount: 1 };
     if (sql.startsWith('INSERT INTO category_inference_rules')) return { rows: [], rowCount: 1 };
   });
@@ -158,10 +279,12 @@ test('recategorizes and learns from the persisted description in one ordered tra
   assert.equal(transactionCalls[1].sql, "SET LOCAL lock_timeout = '1s'");
   assert.match(transactionCalls[2].sql, /JOIN budgets AS b/);
   assert.match(transactionCalls[2].sql, /e\.user_id = \$3/);
+  assert.match(transactionCalls[2].sql, /lower\(b\.name\) = 'investments' AS is_extraordinary/);
   assert.match(transactionCalls[2].sql, /FOR UPDATE OF e FOR KEY SHARE OF b/);
   assert.deepEqual(transactionCalls[2].params, [expenseId, budgetId, userId]);
+  assert.match(transactionCalls[3].sql, /SET budget_id = \$2, is_extraordinary = is_extraordinary OR \$4/);
   assert.match(transactionCalls[3].sql, /user_id = \$3 AND deleted_at IS NULL/);
-  assert.deepEqual(transactionCalls[3].params, [expenseId, budgetId, userId]);
+  assert.deepEqual(transactionCalls[3].params, [expenseId, budgetId, userId, true]);
   assert.match(transactionCalls[4].sql, /ON CONFLICT \(user_id, description_fingerprint\)/);
   assert.match(transactionCalls[4].sql, /updated_at = now\(\)/);
   assert.deepEqual(transactionCalls[4].params, [userId, 'c798e5b18ed876efb8a937d27a0c48de53e3735e490e2116701901e369d8b7d9', budgetId]);
@@ -462,7 +585,7 @@ test('creates an ingest-deduped expense and reports the conflict on redelivery',
       inserts += 1;
       assert.match(sql, /ON CONFLICT \(user_id, ingest_id\) WHERE ingest_id IS NOT NULL DO NOTHING/);
       assert.deepEqual(params, [
-        userId, budgetId, 'ARTISTA DE CAFE', 20.27, '2026-07-19', 'takenos:notification-42',
+        userId, budgetId, 'ARTISTA DE CAFE', 20.27, '2026-07-19', false, 'takenos:notification-42',
       ]);
       return inserts === 1
         ? { rows: [{ id: expenseId }], rowCount: 1 }
@@ -493,7 +616,7 @@ test('flows an optional ingest id through the shared expense insert', async () =
   const database = fakeDatabase((sql, params) => {
     if (sql.startsWith('INSERT INTO expenses')) {
       assert.match(sql, /ingest_id/);
-      assert.equal(params[5], 'takenos:notification-42');
+      assert.equal(params[6], 'takenos:notification-42');
       return { rows: [{ id: expenseId }], rowCount: 1 };
     }
   });

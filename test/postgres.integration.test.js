@@ -30,6 +30,7 @@ test('real PostgreSQL enforces ownership, cents, soft deletion, and atomic claim
       '002_lock_down_public_schema.sql',
       '003_category_inference_rules.sql',
       '004_takenos_ingestion.sql',
+      '005_extraordinary_expenses.sql',
     ]);
     assert.deepEqual(await runMigrations(database, { directory }), []);
     const protectedTables = await database.query(
@@ -99,6 +100,12 @@ test('real PostgreSQL enforces ownership, cents, soft deletion, and atomic claim
     );
     assert.equal(stored.rows[0].amount, '10.01');
     assert.equal(stored.rows[0].expense_date, '2026-08-10');
+    assert.equal((await database.query(
+      `SELECT is_extraordinary
+       FROM expenses
+       WHERE id = $1`,
+      [expenseId],
+    )).rows[0].is_extraordinary, false);
 
     const alternateBudget = await database.query(
       `INSERT INTO budgets (user_id, name, amount)

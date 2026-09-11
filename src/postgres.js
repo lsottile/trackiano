@@ -71,32 +71,39 @@ export function createPostgresRepository(database, {
     description,
     amount,
     budgetId,
+    isExtraordinary = false,
     now = new Date(),
     ingestId = null,
   }) {
     const result = await executor.query(
       `INSERT INTO expenses
-        (user_id, budget_id, description, amount, expense_date, ingest_id)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id`,
+        (user_id, budget_id, description, amount, expense_date, is_extraordinary, ingest_id)
+       VALUES ($1, $2, $3, $4, $5,
+          $6 OR EXISTS (
+            SELECT 1 FROM budgets
+            WHERE id = $2 AND user_id = $1 AND lower(name) = 'investments'
+         ), $7)
+       RETURNING id, is_extraordinary`,
       [
         userId,
         budgetId,
         description,
         roundMoney(amount),
         formatDateInTimeZone(now, timeZone),
+        Boolean(isExtraordinary),
         ingestId,
       ],
     );
-    return result.rows[0]?.id ?? '';
+    return result.rows[0] ?? { id: '', is_extraordinary: false };
   }
 
   async function totalTodayWith(executor, userId, now) {
     const today = formatDateInTimeZone(now, timeZone);
     const result = await executor.query(
       `SELECT COALESCE(SUM(amount), 0) AS total
-       FROM expenses
-       WHERE user_id = $1 AND expense_date = $2 AND deleted_at IS NULL`,
+        FROM expenses
+        WHERE user_id = $1 AND expense_date = $2 AND deleted_at IS NULL
+          AND is_extraordinary = FALSE`,
       [userId, today],
     );
     return money(result.rows[0]?.total ?? 0);
@@ -157,7 +164,7 @@ export function createPostgresRepository(database, {
         await transaction.query("SET LOCAL statement_timeout = '5s'");
         await transaction.query("SET LOCAL lock_timeout = '1s'");
         const locked = await transaction.query(
-          `SELECT e.description
+          `SELECT e.description, lower(b.name) = 'investments' AS is_extraordinary
            FROM expenses AS e
            JOIN budgets AS b
              ON b.id = $2
@@ -175,9 +182,11 @@ export function createPostgresRepository(database, {
         const descriptionFingerprint = fingerprintDescription(locked.rows[0].description);
         const updated = await transaction.query(
           `UPDATE expenses
-           SET budget_id = $2, updated_at = now()
+           SET budget_id = $2,
+               is_extraordinary = is_extraordinary OR $4,
+               updated_at = now()
            WHERE id = $1 AND user_id = $3 AND deleted_at IS NULL`,
-          [expenseId, budgetId, userId],
+          [expenseId, budgetId, userId, locked.rows[0].is_extraordinary],
         );
         if (updated.rowCount !== 1) throw new Error(`Expense not found: ${expenseId}`);
         await transaction.query(
@@ -197,7 +206,8 @@ export function createPostgresRepository(database, {
         `SELECT COALESCE(SUM(amount), 0) AS total
          FROM expenses
          WHERE user_id = $1 AND budget_id = $2
-           AND expense_date >= $3 AND deleted_at IS NULL`,
+            AND expense_date >= $3 AND deleted_at IS NULL
+            AND is_extraordinary = FALSE`,
         [userId, categoryId, formatDateInTimeZone(periodStart, timeZone)],
       );
       return money(result.rows[0]?.total ?? 0);
@@ -210,6 +220,7 @@ export function createPostgresRepository(database, {
           FROM expenses
           WHERE user_id = $1 AND expense_date >= $2 AND expense_date < $3
             AND deleted_at IS NULL
+            AND is_extraordinary = FALSE
             AND ($4::numeric IS NULL OR amount <= $4)
           GROUP BY budget_id`,
         [userId, start, end, maxAmount],
@@ -228,7 +239,7 @@ export function createPostgresRepository(database, {
       const userId = await getUserId();
       const { start, end } = monthlyRange(now, timeZone);
       const result = await database.query(
-        `SELECT id, budget_id, description, amount
+        `SELECT id, budget_id, description, amount, expense_date, is_extraordinary
          FROM expenses
          WHERE user_id = $1 AND expense_date >= $2 AND expense_date < $3
            AND deleted_at IS NULL
@@ -239,8 +250,10 @@ export function createPostgresRepository(database, {
       return result.rows.map((row) => ({
         id: row.id,
         budgetId: row.budget_id,
-        description: row.description,
-        amount: money(row.amount),
+          description: row.description,
+          amount: money(row.amount),
+          expenseDate: row.expense_date,
+          isExtraordinary: row.is_extraordinary,
       }));
     },
 
@@ -330,8 +343,9 @@ export function createPostgresRepository(database, {
       const result = await database.query(
         `SELECT COALESCE(SUM(amount), 0) AS total
          FROM expenses
-         WHERE user_id = $1 AND expense_date >= $2 AND deleted_at IS NULL
-           AND ($3::numeric IS NULL OR amount <= $3)`,
+          WHERE user_id = $1 AND expense_date >= $2 AND deleted_at IS NULL
+            AND is_extraordinary = FALSE
+            AND ($3::numeric IS NULL OR amount <= $3)`,
         [userId, formatDateInTimeZone(periodStart, timeZone), maxAmount],
       );
       return money(result.rows[0]?.total ?? 0);
@@ -348,12 +362,15 @@ export function createPostgresRepository(database, {
       return database.transaction(async (transaction) => {
         const totalToday = await totalTodayWith(transaction, userId, now);
         const amount = roundMoney(expense.amount);
-        const expenseId = await createExpenseWith(
+        const createdExpense = await createExpenseWith(
           transaction,
           userId,
           { ...expense, amount, now },
         );
-        return { expenseId, totalToday: roundMoney(totalToday + amount) };
+        return {
+          expenseId: createdExpense.id,
+          totalToday: createdExpense.is_extraordinary ? totalToday : roundMoney(totalToday + amount),
+        };
       });
     },
 
@@ -362,8 +379,9 @@ export function createPostgresRepository(database, {
       const result = await database.query(
         `SELECT description, amount
          FROM expenses
-         WHERE user_id = $1 AND budget_id = $2
-           AND expense_date >= $3 AND deleted_at IS NULL
+          WHERE user_id = $1 AND budget_id = $2
+            AND expense_date >= $3 AND deleted_at IS NULL
+            AND is_extraordinary = FALSE
          ORDER BY expense_date DESC, created_at DESC`,
         [userId, categoryId, formatDateInTimeZone(periodStart, timeZone)],
       );
@@ -408,6 +426,17 @@ export function createPostgresRepository(database, {
       if (result.rowCount !== 1) throw new Error(`Expense not found: ${expenseId}`);
     },
 
+    async markExpenseExtraordinary(expenseId) {
+      const userId = await getUserId();
+      const result = await database.query(
+        `UPDATE expenses
+         SET is_extraordinary = TRUE, updated_at = now()
+         WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+        [expenseId, userId],
+      );
+      if (result.rowCount !== 1) throw new Error(`Expense not found: ${expenseId}`);
+    },
+
     async updateExpenseBudget(expenseId, budgetId) {
       const userId = await getUserId();
       const result = await database.query(
@@ -420,7 +449,8 @@ export function createPostgresRepository(database, {
 
     async createExpense(expense) {
       const userId = await getUserId();
-      return createExpenseWith(database, userId, expense);
+      const createdExpense = await createExpenseWith(database, userId, expense);
+      return createdExpense.id;
     },
 
     async findActiveMerchantMapping(merchant) {
@@ -550,8 +580,12 @@ export function createPostgresRepository(database, {
       const now = expense.now ?? new Date();
       const result = await database.query(
         `INSERT INTO expenses
-          (user_id, budget_id, description, amount, expense_date, ingest_id)
-         VALUES ($1, $2, $3, $4, $5, $6)
+          (user_id, budget_id, description, amount, expense_date, is_extraordinary, ingest_id)
+         VALUES ($1, $2, $3, $4, $5,
+           $6 OR EXISTS (
+             SELECT 1 FROM budgets
+             WHERE id = $2 AND user_id = $1 AND lower(name) = 'investments'
+           ), $7)
          ON CONFLICT (user_id, ingest_id) WHERE ingest_id IS NOT NULL
          DO NOTHING
          RETURNING id`,
@@ -561,6 +595,7 @@ export function createPostgresRepository(database, {
           expense.description,
           roundMoney(expense.amount),
           formatDateInTimeZone(now, timeZone),
+          Boolean(expense.isExtraordinary),
           expense.ingestId ?? null,
         ],
       );
