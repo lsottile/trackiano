@@ -4,6 +4,7 @@ import { Composer } from 'grammy';
 
 import {
   createMerchantSelectionPromptSender,
+  decodeExtraordinaryExpenseCallback,
   decodeExpenseCallback,
   decodeMerchantCallback,
   encodeExpenseCallback,
@@ -15,6 +16,7 @@ import {
   processPendingMerchant,
   registerExpenseActionHandlers,
   registerMerchantMappingHandlers,
+  registerExtraordinaryExpenseConfirmationHandlers,
   startBot,
 } from '../src/bot.js';
 
@@ -128,12 +130,121 @@ test('logs a Telegram expense rounded to cents with exact action buttons', async
   assert.equal(replies[0][0], 'Cargado ✓\nLlevás $12.35 hoy');
   assert.deepEqual(
     replies[0][1].reply_markup.inline_keyboard.flat().map((button) => button.text),
-    ['Cambiar', 'Eliminar'],
+    ['Cambiar categoría', 'Marcar como extraordinario', 'Eliminar'],
   );
   assert.ok(replies[0][1].reply_markup.inline_keyboard.flat().every(
-    (button) => decodeExpenseCallback(button.callback_data)?.expenseId ===
-      '22222222-2222-2222-2222-222222222222',
+    (button) => {
+      const callback = decodeExpenseCallback(button.callback_data);
+      return callback?.expenseId === '22222222-2222-2222-2222-222222222222';
+    },
   ));
+});
+
+test('marks Investments regardless of capitalization extraordinary without confirmation', async () => {
+  const writes = [];
+  const replies = [];
+
+  await handleExpenseMessage({
+    message: { text: '200 index fund | investments' },
+    reply: async (...args) => replies.push(args),
+  }, {
+    findBudgetId: async () => '11111111-1111-1111-1111-111111111111',
+    createExpenseAndGetTotalToday: async (expense) => {
+      writes.push(expense);
+      return { expenseId: '22222222-2222-2222-2222-222222222222', totalToday: 0 };
+    },
+  });
+
+  assert.deepEqual(writes, [{
+    description: 'Index fund',
+    amount: 200,
+    budgetId: '11111111-1111-1111-1111-111111111111',
+    isExtraordinary: true,
+  }]);
+  assert.match(replies[0][0], /Cargado/);
+  assert.deepEqual(
+    replies[0][1].reply_markup.inline_keyboard.flat().map((button) => button.text),
+    ['Cambiar categoría', 'Eliminar'],
+  );
+});
+
+test('asks before persisting a non-Investments expense above the extraordinary suggestion threshold', async () => {
+  const writes = [];
+  const replies = [];
+  const composer = new Composer();
+  registerExtraordinaryExpenseConfirmationHandlers(composer, {
+    createExpenseAndGetTotalToday: async (expense) => {
+      writes.push(expense);
+      return { expenseId: '22222222-2222-2222-2222-222222222222', totalToday: 0 };
+    },
+  });
+
+  await handleExpenseMessage({
+    message: { text: '151 hotel | Travel' },
+    reply: async (...args) => replies.push(args),
+  }, {
+    findBudgetId: async () => '11111111-1111-1111-1111-111111111111',
+  });
+
+  assert.equal(writes.length, 0);
+  assert.deepEqual(
+    replies[0][1].reply_markup.inline_keyboard.flat().map((button) => button.text),
+    ['Sí', 'No'],
+  );
+  const callback = replies[0][1].reply_markup.inline_keyboard[0][0].callback_data;
+  assert.equal(decodeExtraordinaryExpenseCallback(callback)?.action, 'confirm');
+
+  await composer.middleware()({
+    update: { callback_query: { data: callback } },
+    callbackQuery: { data: callback },
+    answerCallbackQuery: async () => {},
+    reply: async (...args) => replies.push(args),
+  }, () => assert.fail('extraordinary confirmation must short-circuit'));
+
+  assert.deepEqual(writes, [{
+    description: 'Hotel',
+    amount: 151,
+    budgetId: '11111111-1111-1111-1111-111111111111',
+    isExtraordinary: true,
+  }]);
+  assert.deepEqual(
+    replies[1][1].reply_markup.inline_keyboard.flat().map((button) => button.text),
+    ['Cambiar categoría', 'Eliminar'],
+  );
+});
+
+test('persists a confirmed ordinary expense without marking it extraordinary', async () => {
+  const writes = [];
+  const replies = [];
+  const composer = new Composer();
+  registerExtraordinaryExpenseConfirmationHandlers(composer, {
+    createExpenseAndGetTotalToday: async (expense) => {
+      writes.push(expense);
+      return { expenseId: '22222222-2222-2222-2222-222222222222', totalToday: 151 };
+    },
+  });
+
+  await handleExpenseMessage({
+    message: { text: '151 hotel | Travel' },
+    reply: async (...args) => replies.push(args),
+  }, {
+    findBudgetId: async () => '11111111-1111-1111-1111-111111111111',
+  });
+  const callback = replies[0][1].reply_markup.inline_keyboard[0][1].callback_data;
+
+  await composer.middleware()({
+    update: { callback_query: { data: callback } },
+    callbackQuery: { data: callback },
+    answerCallbackQuery: async () => {},
+    reply: async () => {},
+  }, () => assert.fail('ordinary confirmation must short-circuit'));
+
+  assert.deepEqual(writes, [{
+    description: 'Hotel',
+    amount: 151,
+    budgetId: '11111111-1111-1111-1111-111111111111',
+    isExtraordinary: false,
+  }]);
 });
 
 test('recategorizes the exact Telegram expense through inline category buttons', async () => {
@@ -351,6 +462,43 @@ test('deletes the exact Telegram expense through its inline button', async () =>
 
   assert.deepEqual(deleted, [expenseId]);
   assert.deepEqual(replies, ['Gasto eliminado ✓']);
+});
+
+test('marks the exact active Telegram expense extraordinary through its inline button', async () => {
+  const expenseId = '11111111-1111-1111-1111-111111111111';
+  const marked = [];
+  const replies = [];
+  const replyMarkupUpdates = [];
+  const composer = new Composer();
+  registerExpenseActionHandlers(composer, {
+    markExpenseExtraordinary: async (id) => marked.push(id),
+  });
+  const callbackQuery = { data: encodeExpenseCallback('mark-extraordinary', expenseId) };
+
+  await composer.middleware()({
+    update: { callback_query: callbackQuery },
+    callbackQuery,
+    answerCallbackQuery: async () => {},
+    editMessageReplyMarkup: async (options) => replyMarkupUpdates.push(options),
+    reply: async (message) => replies.push(message),
+  }, () => assert.fail('extraordinary callback must short-circuit'));
+
+  assert.deepEqual(marked, [expenseId]);
+  assert.deepEqual(replyMarkupUpdates, [{
+    reply_markup: {
+      inline_keyboard: [[
+        {
+          text: 'Cambiar categoría',
+          callback_data: encodeExpenseCallback('recategorize', expenseId),
+        },
+        {
+          text: 'Eliminar',
+          callback_data: encodeExpenseCallback('delete', expenseId),
+        },
+      ]],
+    },
+  }]);
+  assert.deepEqual(replies, ['Gasto marcado como extraordinario ✓']);
 });
 
 test('encodes merchant callback data below Telegrams 64-byte limit', () => {

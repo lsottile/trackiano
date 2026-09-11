@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -180,4 +180,15 @@ test('applies pending SQL migrations in filename order and skips applied version
   assert.deepEqual(await runMigrations(db, { directory }), []);
   assert.ok(events.includes('SELECT 2;'));
   assert.equal(events.includes('SELECT 1;'), false);
+});
+
+test('migration 005 backfills active Investments expenses for their owner', async () => {
+  const sql = await readFile('migrations/005_extraordinary_expenses.sql', 'utf8');
+
+  assert.match(sql, /ADD COLUMN IF NOT EXISTS is_extraordinary BOOLEAN NOT NULL DEFAULT FALSE/i);
+  assert.match(sql, /UPDATE expenses AS e\s+SET is_extraordinary = TRUE\s+FROM budgets AS b/i);
+  assert.match(sql, /e\.budget_id = b\.id/i);
+  assert.match(sql, /e\.user_id = b\.user_id/i);
+  assert.match(sql, /e\.deleted_at IS NULL/i);
+  assert.match(sql, /lower\(b\.name\) = 'investments'/i);
 });

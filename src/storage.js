@@ -18,6 +18,7 @@ const STORAGE_METHODS = [
   'createBudget',
   'getLastExpense',
   'deleteExpense',
+  'markExpenseExtraordinary',
   'updateExpenseBudget',
   'createExpense',
   'findLearnedBudget',
@@ -66,6 +67,7 @@ export const getCategoryExpenses = (...args) => callApplicationStorage('getCateg
 export const createBudget = (...args) => callApplicationStorage('createBudget', args);
 export const getLastExpense = (...args) => callApplicationStorage('getLastExpense', args);
 export const deleteExpense = (...args) => callApplicationStorage('deleteExpense', args);
+export const markExpenseExtraordinary = (...args) => callApplicationStorage('markExpenseExtraordinary', args);
 export const updateExpenseBudget = (...args) => callApplicationStorage('updateExpenseBudget', args);
 export const createExpense = (...args) => callApplicationStorage('createExpense', args);
 export const findLearnedBudget = (...args) => callApplicationStorage('findLearnedBudget', args);
