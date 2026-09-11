@@ -153,7 +153,7 @@ test('formats a trailing weekly average with an optional extraordinary-expense c
       total: 420,
       maxAmount: 100,
     }),
-    'Promedio últimos 7 días\n2026-08-18 a 2026-08-24\n\n' +
+    'Promedio últimos 7 días (sin gastos extraordinarios)\n2026-08-18 a 2026-08-24\n\n' +
       'Promedio: $60.00/día\nTotal: $420.00\n' +
       'Sin gastos mayores a $100.00',
   );

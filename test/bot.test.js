@@ -91,6 +91,7 @@ test('/average excludes individual expenses above its optional cap', async () =>
   });
 
   assert.deepEqual(calls, [['2026-08-18', '2026-08-25', { maxAmount: 100 }]]);
+  assert.match(replies[0], /Promedio últimos 7 días \(sin gastos extraordinarios\)/);
   assert.match(replies[0], /Promedio: \$60\.00\/día/);
   assert.match(replies[0], /Sin gastos mayores a \$100\.00/);
 });
@@ -127,7 +128,7 @@ test('logs a Telegram expense rounded to cents with exact action buttons', async
   });
 
   assert.equal(writes[0].amount, 10.01);
-  assert.equal(replies[0][0], 'Cargado ✓\nLlevás $12.35 hoy');
+  assert.equal(replies[0][0], 'Cargado ✓\nConsumo de hoy (sin gastos extraordinarios): $12.35');
   assert.deepEqual(
     replies[0][1].reply_markup.inline_keyboard.flat().map((button) => button.text),
     ['Cambiar categoría', 'Marcar como extraordinario', 'Eliminar'],

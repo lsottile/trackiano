@@ -101,7 +101,7 @@ export function formatWeeklyAverage({ period, total, maxAmount = null }) {
   const capLine = maxAmount === null
     ? ''
     : `\nSin gastos mayores a $${formatMoney(maxAmount)}`;
-  return `Promedio últimos 7 días\n${period.start} a ${inclusiveEnd.toISOString().slice(0, 10)}\n\n` +
+  return `Promedio últimos 7 días (sin gastos extraordinarios)\n${period.start} a ${inclusiveEnd.toISOString().slice(0, 10)}\n\n` +
     `Promedio: $${formatMoney(roundMoney(total / period.days))}/día\n` +
     `Total: $${formatMoney(total)}${capLine}`;
 }
