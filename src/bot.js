@@ -329,7 +329,7 @@ export function registerExtraordinaryExpenseConfirmationHandlers(composer, {
       });
       pendingExtraordinaryExpenseConfirmations.delete(callback.confirmationId);
       return ctx.reply(
-        `Cargado ✓\nLlevás $${formatMoney(totalToday)} hoy`,
+        `Cargado ✓\nConsumo de hoy (sin gastos extraordinarios): $${formatMoney(totalToday)}`,
         expenseActionKeyboard(expenseId, { isExtraordinary: callback.action === "confirm" }),
       );
     } catch {
@@ -583,7 +583,7 @@ export async function handleExpenseMessage(ctx, {
       ? `\nCategoría: ${inferredCategoryName}`
       : "";
     return ctx.reply(
-      `Cargado ✓${categoryLine}\nLlevás $${formatMoney(totalToday)} hoy`,
+      `Cargado ✓${categoryLine}\nConsumo de hoy (sin gastos extraordinarios): $${formatMoney(totalToday)}`,
       expenseActionKeyboard(expenseId, { isExtraordinary: isInvestment }),
     );
   } catch (err) {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import test from 'node:test';
+import vm from 'node:vm';
 
 import {
   buildDashboardData,
@@ -44,7 +45,10 @@ test('builds dashboard data for the requested month and current totals', async (
   const data = await buildDashboardData({
     now,
     timeZone,
-    getBudgets: async () => [{ id: 'food', name: 'Food' }],
+    getBudgets: async () => [
+      { id: 'food', name: 'Food' },
+      { id: 'investments', name: 'Investments' },
+    ],
     getSettings: async () => ({ id: 'settings', dailyTarget: 10, attemptedWeeklyPeriod: '', attemptedMonthlyPeriod: '' }),
     getExpensesInRange: async (start, end) => {
       calls.push(['range', start, end]);
@@ -57,7 +61,7 @@ test('builds dashboard data for the requested month and current totals', async (
     getMonthlyExpenseDetails: async () => ([
       { id: 'a', budgetId: 'food', description: 'Flight', amount: 150, expenseDate: '2026-11-22', isExtraordinary: false },
       { id: 'b', budgetId: 'food', description: 'Dinner', amount: 80, expenseDate: '2026-11-23', isExtraordinary: false },
-      { id: 'c', budgetId: 'food', description: 'Hotel', amount: 250, expenseDate: '2026-11-21', isExtraordinary: true },
+      { id: 'c', budgetId: 'investments', description: 'Hotel', amount: 250, expenseDate: '2026-11-21', isExtraordinary: true },
       { id: 'd', budgetId: 'food', description: 'Taxi', amount: 110, expenseDate: '2026-11-20', isExtraordinary: false },
       { id: 'e', budgetId: 'food', description: 'Train', amount: 140, expenseDate: '2026-11-19', isExtraordinary: true },
       { id: 'f', budgetId: 'food', description: 'Lunch', amount: 101, expenseDate: '2026-11-18', isExtraordinary: false },
@@ -75,6 +79,13 @@ test('builds dashboard data for the requested month and current totals', async (
     Math.round((data.month.averagePerDay * data.month.daysInMonth) * 100) / 100,
   );
   assert.equal(data.month.label, expectedMonthLabel);
+  assert.deepEqual(data.month.outflows, {
+    total: 841,
+    categories: [
+      { budgetId: 'food', name: 'Food', amount: 591, extraordinaryAmount: 140 },
+      { budgetId: 'investments', name: 'Investments', amount: 250, extraordinaryAmount: 250 },
+    ],
+  });
   assert.deepEqual(
     data.extraordinaryExpenses.map((expense) => expense.description),
     ['Hotel', 'Train'],
@@ -84,6 +95,98 @@ test('builds dashboard data for the requested month and current totals', async (
   assert.equal(calls.filter(([type]) => type === 'recent').length, 1);
   assert.deepEqual(calls.find(([type]) => type === 'recent'), ['recent', 20]);
 });
+
+test('renders outflow categories and extraordinary amounts in the dashboard legend', async () => {
+  const app = createMiniAppServer({ port: 0, botToken: 'token', ownerId: 42 });
+  const server = await app.start();
+  try {
+    const { port } = server.address();
+    const response = await fetch(`http://127.0.0.1:${port}/`);
+    const dashboard = await response.text();
+    const script = dashboard.match(/<script>\s*([\s\S]*?)\s*<\/script>/)?.[1];
+    assert.ok(script, 'dashboard must include its rendering script');
+
+    const elements = new Map([
+      ['category-chart', createElement()],
+      ['category-legend', createElement()],
+      ['hero-meta', createElement()],
+      ['month-total', createElement()],
+      ['month-meta', createElement()],
+      ['avg-per-day', createElement()],
+      ['avg-meta', createElement()],
+      ['projected-total', createElement()],
+      ['projection-meta', createElement()],
+      ['days-remaining', createElement()],
+      ['days-meta', createElement()],
+      ['expenses', createElement()],
+      ['extraordinary-expenses', createElement()],
+    ]);
+    const dashboardData = {
+      generatedAt: '2026-11-24T12:00:00.000Z',
+      month: {
+        total: 80,
+        daysElapsed: 24,
+        daysInMonth: 30,
+        daysRemaining: 6,
+        averagePerDay: 3.33,
+        projectedTotal: 99.9,
+        outflows: {
+          categories: [
+            { name: 'Food', amount: 591, extraordinaryAmount: 140 },
+            { name: 'Investments', amount: 250, extraordinaryAmount: 250 },
+          ],
+        },
+      },
+      recentExpenses: [],
+      extraordinaryExpenses: [],
+    };
+
+    vm.runInNewContext(script, {
+      Date,
+      Intl,
+      Math,
+      String,
+      document: {
+        createElement,
+        createElementNS: (_namespace, tagName) => createElement(tagName),
+        getElementById: (id) => elements.get(id),
+      },
+      fetch: async () => ({ ok: true, json: async () => dashboardData }),
+      window: {},
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(elements.get('category-chart').children.filter((child) => child.tagName === 'path').length, 2);
+    assert.deepEqual(
+      elements.get('category-legend').children.map((item) => item.innerHTML),
+      [
+        '<span class="swatch" style="background:#ff5f87"></span><span>Food · 70% · $140.00 extraordinario</span>',
+        '<span class="swatch" style="background:#ff9f43"></span><span>Investments · 30% · $250.00 extraordinario</span>',
+      ],
+    );
+  } finally {
+    await app.stop();
+  }
+});
+
+function createElement(tagName = '') {
+  return {
+    children: [],
+    innerHTML: '',
+    tagName,
+    textContent: '',
+    appendChild(child) {
+      this.children.push(child);
+      return child;
+    },
+    replaceChildren(...children) {
+      this.children = children;
+    },
+    setAttribute(name, value) {
+      if (name === 'class') this.className = value;
+    },
+  };
+}
 
 test('caches dashboard data briefly at the HTTP layer', async () => {
   let calls = 0;

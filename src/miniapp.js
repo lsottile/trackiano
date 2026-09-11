@@ -133,6 +133,22 @@ export async function buildDashboardData({
   const averagePerDay = roundMoney(month.total / daysElapsed);
   const projectedTotal = roundMoney(averagePerDay * daysInMonth);
   const budgetNames = currentPeriodData.budgetNames;
+  const outflowCategories = new Map();
+  for (const expense of monthlyExpenseDetails) {
+    const category = outflowCategories.get(expense.budgetId) ?? {
+      budgetId: expense.budgetId,
+      name: budgetNames[expense.budgetId] ?? expense.budgetId,
+      amount: 0,
+      extraordinaryAmount: 0,
+    };
+    category.amount = roundMoney(category.amount + expense.amount);
+    if (expense.isExtraordinary) {
+      category.extraordinaryAmount = roundMoney(category.extraordinaryAmount + expense.amount);
+    }
+    outflowCategories.set(expense.budgetId, category);
+  }
+  const outflows = [...outflowCategories.values()]
+    .sort((first, second) => second.amount - first.amount || first.name.localeCompare(second.name));
   const extraordinaryExpenses = monthlyExpenseDetails
     .filter((expense) => expense.isExtraordinary)
     .sort((left, right) => right.amount - left.amount || right.expenseDate.localeCompare(left.expenseDate))
@@ -153,6 +169,10 @@ export async function buildDashboardData({
       daysRemaining,
       averagePerDay,
       projectedTotal,
+      outflows: {
+        total: roundMoney(outflows.reduce((sum, category) => sum + category.amount, 0)),
+        categories: outflows,
+      },
     },
     extraordinaryExpenses,
     months: currentPeriodData.months,
@@ -233,9 +253,9 @@ function renderDashboardHTML() {
     </div>
 
     <div class="summary">
-      <div class="card"><div class="muted">Mes actual</div><div class="metric" id="month-total">-</div><div class="muted" id="month-meta"></div></div>
-      <div class="card"><div class="muted">Promedio diario</div><div class="metric" id="avg-per-day">-</div><div class="muted" id="avg-meta"></div></div>
-      <div class="card"><div class="muted">Proyección del mes</div><div class="metric" id="projected-total">-</div><div class="muted" id="projection-meta"></div></div>
+      <div class="card"><div class="muted">Consumo del mes (sin gastos extraordinarios)</div><div class="metric" id="month-total">-</div><div class="muted" id="month-meta"></div></div>
+      <div class="card"><div class="muted">Promedio diario (sin gastos extraordinarios)</div><div class="metric" id="avg-per-day">-</div><div class="muted" id="avg-meta"></div></div>
+      <div class="card"><div class="muted">Proyección del mes (sin gastos extraordinarios)</div><div class="metric" id="projected-total">-</div><div class="muted" id="projection-meta"></div></div>
       <div class="card"><div class="muted">Días restantes</div><div class="metric" id="days-remaining">-</div><div class="muted" id="days-meta"></div></div>
     </div>
 
@@ -245,10 +265,10 @@ function renderDashboardHTML() {
     </div>
 
     <div class="section">
-      <h2>Gastos por categoría</h2>
+      <h2>Salidas del mes por categoría</h2>
       <div class="card chart-card">
         <div class="chart-wrap">
-          <svg id="category-chart" class="chart" viewBox="0 0 320 260" role="img" aria-label="Gastos por categoría"></svg>
+          <svg id="category-chart" class="chart" viewBox="0 0 320 260" role="img" aria-label="Salidas del mes por categoría, incluidos gastos extraordinarios"></svg>
         </div>
         <div class="legend" id="category-legend"></div>
       </div>
@@ -342,7 +362,11 @@ function renderDashboardHTML() {
       const topCategories = visible.slice(0, 6);
       const otherAmount = visible.slice(6).reduce((sum, category) => sum + category.amount, 0);
       const chartCategories = otherAmount > 0
-        ? [...topCategories, { name: 'Otros', amount: otherAmount }]
+        ? [...topCategories, {
+          name: 'Otros',
+          amount: otherAmount,
+          extraordinaryAmount: visible.slice(6).reduce((sum, category) => sum + (category.extraordinaryAmount ?? 0), 0),
+        }]
         : topCategories;
 
       chart.replaceChildren();
@@ -384,14 +408,17 @@ function renderDashboardHTML() {
       subLabel.setAttribute('y', centerY + 18);
       subLabel.setAttribute('text-anchor', 'middle');
       subLabel.setAttribute('class', 'donut-sub');
-      subLabel.textContent = 'total';
+      subLabel.textContent = 'salidas totales';
       chart.appendChild(subLabel);
 
       chartCategories.forEach((category, index) => {
         const item = document.createElement('div');
         item.className = 'legend-item';
+        const extraordinaryLabel = category.extraordinaryAmount > 0
+          ? ' · ' + moneyText(category.extraordinaryAmount) + ' extraordinario'
+          : '';
         item.innerHTML = '<span class="swatch" style="background:' + colors[index % colors.length] + '"></span>' +
-          '<span>' + escapeHtml(category.name) + ' · ' + percentText((category.amount / total) * 100) + '</span>';
+          '<span>' + escapeHtml(category.name) + ' · ' + percentText((category.amount / total) * 100) + extraordinaryLabel + '</span>';
         legend.appendChild(item);
       });
     }
@@ -434,7 +461,7 @@ function renderDashboardHTML() {
 
     function renderDashboard(data) {
       renderSummary(data);
-      renderDonutChart(data.month.categories);
+      renderDonutChart(data.month.outflows.categories);
     }
 
     async function refresh() {
