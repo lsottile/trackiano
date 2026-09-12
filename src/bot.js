@@ -108,7 +108,7 @@ function expenseActionKeyboard(expenseId, { isExtraordinary = false } = {}) {
   }];
   if (!isExtraordinary) {
     buttons.push({
-      text: "Marcar como extraordinario",
+      text: "*",
       callback_data: encodeExpenseCallback("mark-extraordinary", expenseId),
     });
   }
@@ -329,7 +329,7 @@ export function registerExtraordinaryExpenseConfirmationHandlers(composer, {
       });
       pendingExtraordinaryExpenseConfirmations.delete(callback.confirmationId);
       return ctx.reply(
-        `Cargado ✓\nConsumo de hoy (sin gastos extraordinarios): $${formatMoney(totalToday)}`,
+        `Cargado ✓\nConsumo de hoy: $${formatMoney(totalToday)}`,
         expenseActionKeyboard(expenseId, { isExtraordinary: callback.action === "confirm" }),
       );
     } catch {
@@ -583,7 +583,7 @@ export async function handleExpenseMessage(ctx, {
       ? `\nCategoría: ${inferredCategoryName}`
       : "";
     return ctx.reply(
-      `Cargado ✓${categoryLine}\nConsumo de hoy (sin gastos extraordinarios): $${formatMoney(totalToday)}`,
+      `Cargado ✓${categoryLine}\nConsumo de hoy: $${formatMoney(totalToday)}`,
       expenseActionKeyboard(expenseId, { isExtraordinary: isInvestment }),
     );
   } catch (err) {

@@ -169,6 +169,24 @@ test('renders outflow categories and extraordinary amounts in the dashboard lege
   }
 });
 
+test('labels only the dashboard daily average as excluding extraordinary expenses', async () => {
+  const app = createMiniAppServer({ port: 0, botToken: 'token', ownerId: 42 });
+  const server = await app.start();
+  try {
+    const { port } = server.address();
+    const response = await fetch(`http://127.0.0.1:${port}/`);
+    const dashboard = await response.text();
+
+    assert.match(dashboard, /Consumo del mes<\/div>/);
+    assert.doesNotMatch(dashboard, /Consumo del mes \(sin gastos extraordinarios\)/);
+    assert.match(dashboard, /Promedio diario \(sin gastos extraordinarios\)/);
+    assert.match(dashboard, /Proyección del mes<\/div>/);
+    assert.doesNotMatch(dashboard, /Proyección del mes \(sin gastos extraordinarios\)/);
+  } finally {
+    await app.stop();
+  }
+});
+
 function createElement(tagName = '') {
   return {
     children: [],

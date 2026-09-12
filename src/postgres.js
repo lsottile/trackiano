@@ -102,8 +102,7 @@ export function createPostgresRepository(database, {
     const result = await executor.query(
       `SELECT COALESCE(SUM(amount), 0) AS total
         FROM expenses
-        WHERE user_id = $1 AND expense_date = $2 AND deleted_at IS NULL
-          AND is_extraordinary = FALSE`,
+        WHERE user_id = $1 AND expense_date = $2 AND deleted_at IS NULL`,
       [userId, today],
     );
     return money(result.rows[0]?.total ?? 0);
@@ -369,7 +368,7 @@ export function createPostgresRepository(database, {
         );
         return {
           expenseId: createdExpense.id,
-          totalToday: createdExpense.is_extraordinary ? totalToday : roundMoney(totalToday + amount),
+          totalToday: roundMoney(totalToday + amount),
         };
       });
     },

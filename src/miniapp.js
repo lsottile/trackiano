@@ -253,9 +253,9 @@ function renderDashboardHTML() {
     </div>
 
     <div class="summary">
-      <div class="card"><div class="muted">Consumo del mes (sin gastos extraordinarios)</div><div class="metric" id="month-total">-</div><div class="muted" id="month-meta"></div></div>
+      <div class="card"><div class="muted">Consumo del mes</div><div class="metric" id="month-total">-</div><div class="muted" id="month-meta"></div></div>
       <div class="card"><div class="muted">Promedio diario (sin gastos extraordinarios)</div><div class="metric" id="avg-per-day">-</div><div class="muted" id="avg-meta"></div></div>
-      <div class="card"><div class="muted">Proyección del mes (sin gastos extraordinarios)</div><div class="metric" id="projected-total">-</div><div class="muted" id="projection-meta"></div></div>
+      <div class="card"><div class="muted">Proyección del mes</div><div class="metric" id="projected-total">-</div><div class="muted" id="projection-meta"></div></div>
       <div class="card"><div class="muted">Días restantes</div><div class="metric" id="days-remaining">-</div><div class="muted" id="days-meta"></div></div>
     </div>
 
