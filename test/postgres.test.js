@@ -121,7 +121,28 @@ test('excludes extraordinary expenses from category consumption totals', async (
   assert.match(categoryConsumptionQuery.sql, /is_extraordinary = FALSE/);
 });
 
-test('does not add an extraordinary expense to todays consumption total', async () => {
+test('includes extraordinary expenses in the queried today consumption total', async () => {
+  const database = fakeDatabase((sql) => {
+    if (sql.includes('SUM(amount)') && sql.includes('expense_date = $2')) {
+      return { rows: [{ total: '275.00' }], rowCount: 1 };
+    }
+  });
+  const repository = createPostgresRepository(database, {
+    telegramUserId: 42,
+    timeZone: 'America/Guatemala',
+  });
+
+  assert.equal(await repository.getTotalSpentToday({
+    now: new Date('2026-07-20T05:30:00.000Z'),
+  }), 275);
+
+  const todayQuery = database.calls.find(({ sql }) =>
+    sql.includes('SUM(amount)') && sql.includes('expense_date = $2'),
+  );
+  assert.doesNotMatch(todayQuery.sql, /is_extraordinary = FALSE/);
+});
+
+test('adds an extraordinary expense to todays consumption total after creating it', async () => {
   const database = fakeDatabase((sql) => {
     if (sql.includes('SUM(amount)') && sql.includes('expense_date = $2')) {
       return { rows: [{ total: '75.00' }], rowCount: 1 };
@@ -141,10 +162,10 @@ test('does not add an extraordinary expense to todays consumption total', async 
     budgetId,
     isExtraordinary: true,
     now: new Date('2026-07-20T05:30:00.000Z'),
-  }), { expenseId, totalToday: 75 });
+  }), { expenseId, totalToday: 275 });
 });
 
-test('does not add an Investments expense resolved as extraordinary to todays consumption total', async () => {
+test('adds an Investments expense resolved as extraordinary to todays consumption total', async () => {
   const database = fakeDatabase((sql) => {
     if (sql.includes('SUM(amount)') && sql.includes('expense_date = $2')) {
       return { rows: [{ total: '75.00' }], rowCount: 1 };
@@ -164,7 +185,7 @@ test('does not add an Investments expense resolved as extraordinary to todays co
     amount: 200,
     budgetId,
     now: new Date('2026-07-20T05:30:00.000Z'),
-  }), { expenseId, totalToday: 75 });
+  }), { expenseId, totalToday: 275 });
 });
 
 test('changes or soft-deletes only the owners exact expense', async () => {

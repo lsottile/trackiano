@@ -110,7 +110,7 @@ test('/average rejects an invalid cap without reading expenses', async () => {
   assert.equal(readExpenses, false);
 });
 
-test('logs a Telegram expense rounded to cents with exact action buttons', async () => {
+test('logs a Telegram expense rounded to cents with the abbreviated extraordinary action', async () => {
   const replies = [];
   const writes = [];
   await handleExpenseMessage({
@@ -128,10 +128,10 @@ test('logs a Telegram expense rounded to cents with exact action buttons', async
   });
 
   assert.equal(writes[0].amount, 10.01);
-  assert.equal(replies[0][0], 'Cargado ✓\nConsumo de hoy (sin gastos extraordinarios): $12.35');
+  assert.equal(replies[0][0], 'Cargado ✓\nConsumo de hoy: $12.35');
   assert.deepEqual(
     replies[0][1].reply_markup.inline_keyboard.flat().map((button) => button.text),
-    ['Cambiar categoría', 'Marcar como extraordinario', 'Eliminar'],
+    ['Cambiar categoría', '*', 'Eliminar'],
   );
   assert.ok(replies[0][1].reply_markup.inline_keyboard.flat().every(
     (button) => {
