@@ -130,6 +130,7 @@ export async function buildDashboardData({
   const daysElapsed = getDaysElapsedInMonth(now, timeZone, month.range.start);
   const daysInMonth = month.range.days;
   const daysRemaining = Math.max(0, daysInMonth - daysElapsed);
+  const monthTotal = roundMoney(monthlyExpenseDetails.reduce((sum, expense) => sum + expense.amount, 0));
   const averagePerDay = roundMoney(month.total / daysElapsed);
   const projectedTotal = roundMoney(averagePerDay * daysInMonth);
   const budgetNames = currentPeriodData.budgetNames;
@@ -162,7 +163,7 @@ export async function buildDashboardData({
     generatedAt: now.toISOString(),
     month: {
       label: month.label,
-      total: month.total,
+      total: monthTotal,
       categories: month.categories,
       daysElapsed,
       daysInMonth,

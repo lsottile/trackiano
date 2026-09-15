@@ -24,6 +24,7 @@ test('bot startup preflight runs before construction and polling', async () => {
   const events = [];
   const started = await startBot({
     preflight: () => events.push('preflight'),
+    startWebApp: null,
     createBot: () => {
       events.push('construct');
       return { start: () => { events.push('poll'); return 'started'; }, stop: () => {} };
@@ -130,8 +131,12 @@ test('logs a Telegram expense rounded to cents with the abbreviated extraordinar
   assert.equal(writes[0].amount, 10.01);
   assert.equal(replies[0][0], 'Cargado ✓\nConsumo de hoy: $12.35');
   assert.deepEqual(
-    replies[0][1].reply_markup.inline_keyboard.flat().map((button) => button.text),
-    ['Cambiar categoría', '*', 'Eliminar'],
+    replies[0][1].reply_markup.inline_keyboard.map((row) => row.map((button) => button.text)),
+    [['Cambiar categoría', '*', 'Eliminar']],
+  );
+  assert.deepEqual(
+    replies[0][1].reply_markup.inline_keyboard.flat().map((button) => decodeExpenseCallback(button.callback_data)?.action),
+    ['recategorize', 'mark-extraordinary', 'delete'],
   );
   assert.ok(replies[0][1].reply_markup.inline_keyboard.flat().every(
     (button) => {
