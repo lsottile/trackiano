@@ -131,12 +131,15 @@ test('logs a Telegram expense rounded to cents with the abbreviated extraordinar
   assert.equal(writes[0].amount, 10.01);
   assert.equal(replies[0][0], 'Cargado ✓\nConsumo de hoy: $12.35');
   assert.deepEqual(
-    replies[0][1].reply_markup.inline_keyboard.map((row) => row.map((button) => button.text)),
-    [['Cambiar categoría', '*', 'Eliminar']],
-  );
-  assert.deepEqual(
-    replies[0][1].reply_markup.inline_keyboard.flat().map((button) => decodeExpenseCallback(button.callback_data)?.action),
-    ['recategorize', 'mark-extraordinary', 'delete'],
+    replies[0][1].reply_markup.inline_keyboard.flat().map((button) => [
+      button.text,
+      decodeExpenseCallback(button.callback_data)?.action,
+    ]),
+    [
+      ['Cambiar', 'recategorize'],
+      ['Eliminar', 'delete'],
+      ['*', 'mark-extraordinary'],
+    ],
   );
   assert.ok(replies[0][1].reply_markup.inline_keyboard.flat().every(
     (button) => {
@@ -170,7 +173,7 @@ test('marks Investments regardless of capitalization extraordinary without confi
   assert.match(replies[0][0], /Cargado/);
   assert.deepEqual(
     replies[0][1].reply_markup.inline_keyboard.flat().map((button) => button.text),
-    ['Cambiar categoría', 'Eliminar'],
+    ['Cambiar', 'Eliminar'],
   );
 });
 
@@ -215,7 +218,7 @@ test('asks before persisting a non-Investments expense above the extraordinary s
   }]);
   assert.deepEqual(
     replies[1][1].reply_markup.inline_keyboard.flat().map((button) => button.text),
-    ['Cambiar categoría', 'Eliminar'],
+    ['Cambiar', 'Eliminar'],
   );
 });
 
@@ -494,7 +497,7 @@ test('marks the exact active Telegram expense extraordinary through its inline b
     reply_markup: {
       inline_keyboard: [[
         {
-          text: 'Cambiar categoría',
+          text: 'Cambiar',
           callback_data: encodeExpenseCallback('recategorize', expenseId),
         },
         {

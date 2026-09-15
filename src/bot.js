@@ -103,19 +103,19 @@ export function decodeExpenseCallback(data) {
 
 function expenseActionKeyboard(expenseId, { isExtraordinary = false } = {}) {
   const buttons = [{
-    text: "Cambiar categoría",
+    text: "Cambiar",
     callback_data: encodeExpenseCallback("recategorize", expenseId),
   }];
+  buttons.push({
+    text: "Eliminar",
+    callback_data: encodeExpenseCallback("delete", expenseId),
+  });
   if (!isExtraordinary) {
     buttons.push({
       text: "*",
       callback_data: encodeExpenseCallback("mark-extraordinary", expenseId),
     });
   }
-  buttons.push({
-    text: "Eliminar",
-    callback_data: encodeExpenseCallback("delete", expenseId),
-  });
   return { reply_markup: { inline_keyboard: [buttons] } };
 }
 

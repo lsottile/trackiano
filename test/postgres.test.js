@@ -384,6 +384,20 @@ test('groups active expenses by budget in a half-open date range with an optiona
   );
 });
 
+test('includes extraordinary expenses when requested for a date range', async () => {
+  const database = fakeDatabase((sql) => {
+    if (sql.includes('GROUP BY budget_id')) {
+      return { rows: [{ budget_id: budgetId, total: '20.27' }], rowCount: 1 };
+    }
+  });
+  const repository = createPostgresRepository(database, { telegramUserId: 42 });
+
+  await repository.getExpensesInRange('2026-07-01', '2026-08-01', { includeExtraordinary: true });
+
+  const expensesQuery = database.calls.find(({ sql }) => sql.includes('GROUP BY budget_id'));
+  assert.doesNotMatch(expensesQuery.sql, /is_extraordinary = FALSE/);
+});
+
 test('finds the owner-scoped active merchant mapping or returns null on miss', async () => {
   const database = fakeDatabase((sql, params) => {
     if (sql.includes('FROM merchant_mappings')) {

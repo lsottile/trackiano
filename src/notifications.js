@@ -60,7 +60,11 @@ export async function runNotifications({
     if (report.attemptedPeriod === report.period.key) continue;
     const [budgets, totals] = await Promise.all([
       readBudgets(),
-      readExpenses(report.period.start, report.period.end),
+      readExpenses(
+        report.period.start,
+        report.period.end,
+        report.type === 'weekly' ? { includeExtraordinary: true } : {},
+      ),
     ]);
     const message = formatAutomaticSummary({
       periodType: report.type,

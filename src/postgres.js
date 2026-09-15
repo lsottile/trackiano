@@ -212,14 +212,14 @@ export function createPostgresRepository(database, {
       return money(result.rows[0]?.total ?? 0);
     },
 
-    async getExpensesInRange(start, end, { maxAmount = null } = {}) {
+    async getExpensesInRange(start, end, { maxAmount = null, includeExtraordinary = false } = {}) {
       const userId = await getUserId();
       const result = await database.query(
         `SELECT budget_id, SUM(amount) AS total
           FROM expenses
           WHERE user_id = $1 AND expense_date >= $2 AND expense_date < $3
             AND deleted_at IS NULL
-            AND is_extraordinary = FALSE
+             ${includeExtraordinary ? '' : 'AND is_extraordinary = FALSE'}
             AND ($4::numeric IS NULL OR amount <= $4)
           GROUP BY budget_id`,
         [userId, start, end, maxAmount],

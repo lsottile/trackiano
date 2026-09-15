@@ -116,6 +116,29 @@ test('claims each period before sending and sends weekly plus monthly on Monday 
   assert.equal(state.attemptedMonthlyPeriod, '2026-05');
 });
 
+test('weekly automatic summary includes extraordinary expenses', async () => {
+  const messages = [];
+
+  await runNotifications({
+    now: new Date('2026-06-08T12:00:00.000Z'),
+    timeZone: 'UTC',
+    getSettings: async () => ({ id: 'settings-page', dailyTarget: 70 }),
+    claimSummaryPeriod: async () => true,
+    getExpensesInRange: async (start, end, options) => {
+      if (start === '2026-06-01' && end === '2026-06-08') {
+        return options?.includeExtraordinary ? { food: 250 } : { food: 100 };
+      }
+      return { food: 100 };
+    },
+    getBudgets: async () => [{ id: 'food', name: 'Food' }],
+    sendMessage: async (message) => messages.push(message),
+  });
+
+  assert.match(messages[0], /Weekly spending summary/);
+  assert.match(messages[0], /Food: \$250\.00/);
+  assert.match(messages[0], /Total: \$250\.00/);
+});
+
 test('repeated execution sends each closed period only once', async () => {
   const { dependencies, events } = createDependencies();
   const options = {
