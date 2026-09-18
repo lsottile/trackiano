@@ -132,7 +132,7 @@ export async function buildDashboardData({
   const daysRemaining = Math.max(0, daysInMonth - daysElapsed);
   const monthTotal = roundMoney(monthlyExpenseDetails.reduce((sum, expense) => sum + expense.amount, 0));
   const averagePerDay = roundMoney(month.total / daysElapsed);
-  const projectedTotal = Math.max(monthTotal, roundMoney(averagePerDay * daysInMonth));
+  const projectedTotal = roundMoney(monthTotal + (averagePerDay * daysRemaining));
   const budgetNames = currentPeriodData.budgetNames;
   const outflowCategories = new Map();
   for (const expense of monthlyExpenseDetails) {
