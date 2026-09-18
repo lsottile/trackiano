@@ -74,7 +74,7 @@ test('builds dashboard data for the requested month and current totals', async (
   assert.equal(data.month.daysInMonth, 30);
   assert.equal(data.month.daysRemaining, 6);
   assert.equal(data.month.averagePerDay, 3.33);
-  assert.equal(data.month.projectedTotal, 99.9);
+  assert.equal(data.month.projectedTotal, 841);
   assert.equal(data.month.label, expectedMonthLabel);
   assert.deepEqual(data.month.outflows, {
     total: 841,
@@ -91,6 +91,21 @@ test('builds dashboard data for the requested month and current totals', async (
   assert.equal(calls.filter(([type]) => type === 'range').length, 3);
   assert.equal(calls.filter(([type]) => type === 'recent').length, 1);
   assert.deepEqual(calls.find(([type]) => type === 'recent'), ['recent', 20]);
+});
+
+test('keeps the monthly projection at least as high as the actual total after a large extraordinary expense', async () => {
+  const data = await buildDashboardData({
+    now: new Date('2026-11-24T12:00:00.000Z'),
+    timeZone: 'UTC',
+    getBudgets: async () => [{ id: 'travel', name: 'Travel' }],
+    getExpensesInRange: async () => ({ travel: 100 }),
+    getMonthlyExpenseDetails: async () => ([
+      { id: 'expense', budgetId: 'travel', description: 'Emergency flight', amount: 1_000, expenseDate: '2026-11-20', isExtraordinary: true },
+    ]),
+    getRecentExpenses: async () => [],
+  });
+
+  assert.equal(data.month.projectedTotal, 1_000);
 });
 
 test('renders outflow categories and extraordinary amounts in the dashboard legend', async () => {
