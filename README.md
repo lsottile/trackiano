@@ -81,9 +81,9 @@ The long-running bot and automatic summaries use separate Railway services:
 Connect the mailbox once; no per-expense entry is needed afterward:
 
 1. Set `TAKENOS_EMAIL_SENDER` to the exact address shown in a genuine Takenos purchase email.
-2. In Gmail Apps Script, Make, Zapier, or another trusted mailbox automation, filter new messages by that same sender.
-3. Send each match to `POST https://<ingestion-service>/ingest/takenos/email` with `Authorization: Bearer <INGEST_TOKEN>` and `Content-Type: application/json`.
-4. Mark the source message processed only after Trackiano returns `created`, `duplicate`, or `pending`.
+2. Follow the [Gmail forwarder setup](integrations/gmail/README.md). It checks every five minutes and only selects messages received after installation.
+3. The forwarder sends each match to `POST https://<ingestion-service>/ingest/takenos/email` with `Authorization: Bearer <INGEST_TOKEN>` and `Content-Type: application/json`.
+4. It labels the source message `trackiano-ingested` only after Trackiano returns `created`, `duplicate`, or `pending`.
 
 The request body is intentionally provider-neutral:
 
