@@ -1,6 +1,6 @@
 # Connect Gmail to Trackiano
 
-This one-time setup forwards new Takenos purchase emails to Trackiano every five minutes. It ignores older messages, labels accepted messages `trackiano-ingested`, and leaves rejected messages unlabelled for retry or inspection.
+This one-time setup forwards new Takenos purchase emails to Trackiano every five minutes. It ignores older messages, moves accepted messages to Gmail Trash, and leaves rejected messages in place for retry or inspection.
 
 ## Before you start
 
@@ -34,7 +34,7 @@ The setup records its activation time before creating the trigger, so it does no
 After the next Takenos purchase email arrives:
 
 1. Wait up to five minutes.
-2. Confirm Gmail applied the `trackiano-ingested` label to that message.
+2. Confirm Gmail moved the message to Trash.
 3. Confirm Trackiano created the expense or sent the existing Telegram category prompt.
 
-If the label is absent, open **Apps Script → Executions**. Trackiano deliberately leaves rejected messages unlabelled so they can be retried after fixing the sender, endpoint, token, or email format.
+If the message remains in the inbox, open **Apps Script → Executions**. Trackiano deliberately leaves rejected messages in place so they can be retried after fixing the sender, endpoint, token, or email format.

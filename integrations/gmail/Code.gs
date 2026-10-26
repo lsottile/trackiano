@@ -1,4 +1,3 @@
-const TRACKIANO_PROCESSED_LABEL = 'trackiano-ingested';
 const TRACKIANO_TRIGGER_HANDLER = 'forwardTakenosEmails';
 
 function requiredProperty_(properties, name) {
@@ -17,17 +16,6 @@ function getConfig_() {
   };
 }
 
-function getProcessedLabelId_() {
-  const labels = Gmail.Users.Labels.list('me').labels ?? [];
-  const existing = labels.find((label) => label.name === TRACKIANO_PROCESSED_LABEL);
-  if (existing) return existing.id;
-  return Gmail.Users.Labels.create({
-    name: TRACKIANO_PROCESSED_LABEL,
-    labelListVisibility: 'labelShow',
-    messageListVisibility: 'show',
-  }, 'me').id;
-}
-
 function headerValue_(headers, name) {
   return headers?.find((header) => header.name?.toLowerCase() === name)?.value ?? '';
 }
@@ -44,7 +32,7 @@ function plainText_(part) {
   return '';
 }
 
-function forwardMessage_(messageId, config, labelId) {
+function forwardMessage_(messageId, config) {
   const message = Gmail.Users.Messages.get('me', messageId, { format: 'full' });
   const payload = {
     id: message.id,
@@ -68,7 +56,7 @@ function forwardMessage_(messageId, config, labelId) {
   }
   if (statusCode >= 200 && statusCode < 300 &&
       ['created', 'duplicate', 'pending'].includes(result.status)) {
-    Gmail.Users.Messages.modify({ addLabelIds: [labelId] }, 'me', messageId);
+    Gmail.Users.Messages.trash('me', messageId);
   }
 }
 
@@ -77,11 +65,10 @@ function forwardTakenosEmails() {
   if (!lock.tryLock(1000)) return;
   try {
     const config = getConfig_();
-    const labelId = getProcessedLabelId_();
-    const query = `from:(${config.sender}) -label:${TRACKIANO_PROCESSED_LABEL} after:${config.startedAt}`;
+    const query = `from:(${config.sender}) after:${config.startedAt}`;
     const messages = Gmail.Users.Messages.list('me', { q: query, maxResults: 50 }).messages ?? [];
     for (const message of messages) {
-      forwardMessage_(message.id, config, labelId);
+      forwardMessage_(message.id, config);
     }
   } finally {
     lock.releaseLock();
@@ -94,7 +81,6 @@ function setupTakenosEmailForwarder() {
     properties.setProperty('TRACKIANO_STARTED_AT', String(Math.floor(Date.now() / 1000)));
   }
   getConfig_();
-  getProcessedLabelId_();
   for (const trigger of ScriptApp.getProjectTriggers()) {
     if (trigger.getHandlerFunction() === TRACKIANO_TRIGGER_HANDLER) {
       ScriptApp.deleteTrigger(trigger);

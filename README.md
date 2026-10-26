@@ -83,7 +83,7 @@ Connect the mailbox once; no per-expense entry is needed afterward:
 1. Set `TAKENOS_EMAIL_SENDER` to the exact address shown in a genuine Takenos purchase email.
 2. Follow the [Gmail forwarder setup](integrations/gmail/README.md). It checks every five minutes and only selects messages received after installation.
 3. The forwarder sends each match to `POST https://<ingestion-service>/ingest/takenos/email` with `Authorization: Bearer <INGEST_TOKEN>` and `Content-Type: application/json`.
-4. It labels the source message `trackiano-ingested` only after Trackiano returns `created`, `duplicate`, or `pending`.
+4. It moves the source message to Gmail Trash only after Trackiano returns `created`, `duplicate`, or `pending`.
 
 The request body is intentionally provider-neutral:
 

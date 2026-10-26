@@ -15,7 +15,7 @@ function loadForwarder({
   const listCalls = [];
   const propertyWrites = [];
   const requests = [];
-  const modifiedMessages = [];
+  const trashedMessages = [];
   const scriptProperties = {
     TRACKIANO_INGEST_URL: 'https://trackiano.example.com',
     TRACKIANO_INGEST_TOKEN: 'secret-token',
@@ -27,10 +27,6 @@ function loadForwarder({
     console,
     Gmail: {
       Users: {
-        Labels: {
-          list: () => ({ labels: [{ id: 'Label_1', name: 'trackiano-ingested' }] }),
-          create: () => { throw new Error('Label already exists'); },
-        },
         Messages: {
           list: (userId, options) => {
             listCalls.push({ userId, options });
@@ -49,8 +45,8 @@ function loadForwarder({
               }],
             },
           }),
-          modify: (resource, userId, messageId) => {
-            modifiedMessages.push({ resource, userId, messageId });
+          trash: (userId, messageId) => {
+            trashedMessages.push({ userId, messageId });
           },
         },
       },
@@ -101,15 +97,15 @@ function loadForwarder({
     createdTriggers,
     deletedTriggers,
     listCalls,
-    modifiedMessages,
     propertyWrites,
     requests,
     text,
+    trashedMessages,
   };
 }
 
-test('forwards one matching Gmail message and labels it only after Trackiano accepts it', () => {
-  const { context, modifiedMessages, requests, text } = loadForwarder();
+test('forwards one matching Gmail message and trashes it only after Trackiano accepts it', () => {
+  const { context, requests, text, trashedMessages } = loadForwarder();
 
   context.forwardTakenosEmails?.();
 
@@ -122,15 +118,14 @@ test('forwards one matching Gmail message and labels it only after Trackiano acc
     subject: 'Tu compra con Takecard fue aprobada',
     text,
   });
-  assert.deepEqual(JSON.parse(JSON.stringify(modifiedMessages)), [{
-    resource: { addLabelIds: ['Label_1'] },
+  assert.deepEqual(trashedMessages, [{
     userId: 'me',
     messageId: 'gmail-message-1',
   }]);
 });
 
-test('leaves a Gmail message unlabelled when Trackiano rejects it', () => {
-  const { context, modifiedMessages, requests } = loadForwarder({
+test('leaves a Gmail message in place when Trackiano rejects it', () => {
+  const { context, requests, trashedMessages } = loadForwarder({
     responseCode: 422,
     responseBody: { error: 'Not a Takenos purchase email' },
   });
@@ -138,7 +133,7 @@ test('leaves a Gmail message unlabelled when Trackiano rejects it', () => {
   context.forwardTakenosEmails();
 
   assert.equal(requests.length, 1);
-  assert.deepEqual(modifiedMessages, []);
+  assert.deepEqual(trashedMessages, []);
 });
 
 test('searches only for Takenos messages received after the integration was installed', () => {
@@ -149,7 +144,7 @@ test('searches only for Takenos messages received after the integration was inst
   assert.deepEqual(JSON.parse(JSON.stringify(listCalls)), [{
     userId: 'me',
     options: {
-      q: 'from:(notifications@takenos.com) -label:trackiano-ingested after:1770000000',
+      q: 'from:(notifications@takenos.com) after:1770000000',
       maxResults: 50,
     },
   }]);
