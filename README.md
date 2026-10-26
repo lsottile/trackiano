@@ -53,6 +53,7 @@ When category is omitted, the bot normalizes the current description with NFKC, 
 | `PAY_DATE_DAY` | — | Day of month for payday (defaults to last day of month) |
 | `INGEST_TOKEN` | Takenos ingestion | Bearer token required by the ingestion HTTP endpoint |
 | `TAKENOS_ANDROID_PACKAGE` | Takenos ingestion | Android package name accepted as the Takenos notification source |
+| `TAKENOS_EMAIL_SENDER` | Takenos email ingestion | Exact sender address accepted by the email endpoint; unset disables email ingestion |
 | `PORT` | — | HTTP port for the ingestion server, defaults to `3000` |
 
 ## Setup
@@ -74,6 +75,28 @@ The long-running bot and automatic summaries use separate Railway services:
 - Notification service: run `npm run notifications` as a Railway cron service.
 - Schedule the notification service periodically in UTC; every 15 minutes is recommended. The command checks calendar periods in `APP_TIMEZONE` and exits after each run.
 - Takenos ingestion service: run `node src/ingest.js` as a separate process. It exposes `POST /ingest/takenos` and requires public HTTP reachability from the device posting notifications, plus `INGEST_TOKEN` and `TAKENOS_ANDROID_PACKAGE`. It also needs `TELEGRAM_TOKEN` and `TELEGRAM_OWNER_ID` to deliver the merchant-selection prompt, and runs the same runtime preflight as the bot (`STORAGE_BACKEND`, `DATABASE_URL`, `PGSSLMODE`). Unknown merchants are persisted first and the owner is prompted in Telegram to pick a category; future purchases from a mapped merchant create expenses directly.
+
+### Automatic Takenos email ingestion
+
+Connect the mailbox once; no per-expense entry is needed afterward:
+
+1. Set `TAKENOS_EMAIL_SENDER` to the exact address shown in a genuine Takenos purchase email.
+2. In Gmail Apps Script, Make, Zapier, or another trusted mailbox automation, filter new messages by that same sender.
+3. Send each match to `POST https://<ingestion-service>/ingest/takenos/email` with `Authorization: Bearer <INGEST_TOKEN>` and `Content-Type: application/json`.
+4. Mark the source message processed only after Trackiano returns `created`, `duplicate`, or `pending`.
+
+The request body is intentionally provider-neutral:
+
+```json
+{
+  "id": "stable-provider-message-id",
+  "from": "Takenos <notifications@example.com>",
+  "subject": "Tu compra con Takecard fue aprobada",
+  "text": "Se realizó un pago exitoso de 20,27 USD en ARTISTA DE CAFE"
+}
+```
+
+Trackiano accepts at most 64 KiB, validates the bearer token and exact sender, and stores only the parsed merchant, amount, and stable deduplication ID. A known merchant is booked immediately; an unknown merchant follows the existing Telegram category-selection flow. Retrying the same message ID does not create another expense.
 
 ### Historical Notion rollback setup
 

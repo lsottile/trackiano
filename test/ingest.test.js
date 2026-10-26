@@ -40,6 +40,17 @@ async function post(url, payload) {
   });
 }
 
+async function postEmail(url, payload) {
+  return fetch(`${url}/ingest/takenos/email`, {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer test-token',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
 function request(url, { headers, body }) {
   return fetch(`${url}/ingest/takenos`, {
     method: 'POST',
@@ -109,6 +120,120 @@ test('creates a mapped Takenos expense without reading budgets or invoking infer
     budgetId: 'coffee',
     ingestId: 'takenos:0|com.takenos.app|42|null|10234',
   }]);
+});
+
+test('creates a mapped expense from an authenticated Takenos email', async () => {
+  const written = [];
+  await withServer({
+    takenosEmailSender: 'notifications@takenos.com',
+    createExpenseIfNew: async (expense) => {
+      written.push(expense);
+      return { created: true, expenseId: 'expense-1' };
+    },
+  }, async (url) => {
+    const response = await postEmail(url, {
+      id: '18f0a1b2c3d4e5f6',
+      from: 'Takenos <notifications@takenos.com>',
+      subject: 'Tu compra con Takecard fue aprobada',
+      text: [
+        'Hola Luciano,',
+        'Se realizó un pago exitoso de 20,27 USD en Artista de Café',
+        'Podés revisar el movimiento en la app.',
+      ].join('\n'),
+    });
+    assert.equal(response.status, 201);
+    assert.deepEqual(await response.json(), { status: 'created' });
+  });
+  assert.deepEqual(written, [{
+    description: 'Artista de Café',
+    amount: 20.27,
+    budgetId: 'food',
+    ingestId: 'takenos:email:18f0a1b2c3d4e5f6',
+  }]);
+});
+
+test('ignores email from a sender other than the configured Takenos address', async () => {
+  let writes = 0;
+  await withServer({
+    takenosEmailSender: 'notifications@takenos.com',
+    createExpenseIfNew: async () => {
+      writes += 1;
+      return { created: true, expenseId: 'expense-1' };
+    },
+  }, async (url) => {
+    const response = await postEmail(url, {
+      id: '18f0a1b2c3d4e5f6',
+      from: 'Attacker <other@example.com>',
+      subject: 'Tu compra con Takecard fue aprobada',
+      text: 'Se realizó un pago exitoso de 20,27 USD en Artista de Café',
+    });
+    assert.equal(response.status, 202);
+    assert.deepEqual(await response.json(), {
+      status: 'ignored', reason: 'unsupported_source',
+    });
+  });
+  assert.equal(writes, 0);
+});
+
+test('accepts a Takenos email body larger than an Android notification payload', async () => {
+  await withServer({
+    takenosEmailSender: 'notifications@takenos.com',
+    createExpenseIfNew: async () => ({ created: true, expenseId: 'expense-1' }),
+  }, async (url) => {
+    const response = await postEmail(url, {
+      id: '18f0a1b2c3d4e5f6',
+      from: 'Takenos <notifications@takenos.com>',
+      subject: 'Tu compra con Takecard fue aprobada',
+      text: `${'x'.repeat(5000)}\nSe realizó un pago exitoso de 20,27 USD en Artista de Café`,
+    });
+    assert.equal(response.status, 201);
+  });
+});
+
+test('parses a Takenos purchase when the email wraps the payment details', async () => {
+  const written = [];
+  await withServer({
+    takenosEmailSender: 'notifications@takenos.com',
+    createExpenseIfNew: async (expense) => {
+      written.push(expense);
+      return { created: true, expenseId: 'expense-1' };
+    },
+  }, async (url) => {
+    const response = await postEmail(url, {
+      id: '18f0a1b2c3d4e5f7',
+      from: 'Takenos <notifications@takenos.com>',
+      subject: 'Tu compra con Takecard fue aprobada',
+      text: [
+        'Se realizó un pago exitoso de',
+        '1.234,56 USD',
+        'en Artista de Café',
+        '',
+        'Podés revisar el movimiento en la app.',
+      ].join('\n'),
+    });
+    assert.equal(response.status, 201);
+  });
+  assert.deepEqual(written, [{
+    description: 'Artista de Café',
+    amount: 1234.56,
+    budgetId: 'food',
+    ingestId: 'takenos:email:18f0a1b2c3d4e5f7',
+  }]);
+});
+
+test('rejects a Takenos email payload larger than 64 KiB', async () => {
+  await withServer({
+    takenosEmailSender: 'notifications@takenos.com',
+  }, async (url) => {
+    const response = await postEmail(url, {
+      id: '18f0a1b2c3d4e5f6',
+      from: 'Takenos <notifications@takenos.com>',
+      subject: 'Tu compra con Takecard fue aprobada',
+      text: 'x'.repeat(70 * 1024),
+    });
+    assert.equal(response.status, 413);
+    assert.deepEqual(await response.json(), { error: 'Payload too large' });
+  });
 });
 
 test('persists an unknown purchase before requesting the owner selection', async () => {
