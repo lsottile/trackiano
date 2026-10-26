@@ -13,6 +13,8 @@ const MAX_EMAIL_BODY_BYTES = 64 * 1024;
 const PURCHASE_TITLE_PREFIX = 'Compraste con tu Takecar';
 const PURCHASE_BODY = /^Se realizó un pago exitoso de (\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2}) USD en (.+)$/u;
 const PURCHASE_EMAIL_BODY = /Se realizó un pago exitoso de\s+(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})\s+USD\s+en\s+([^\r\n]+)/u;
+const CARD_PAYMENT_EMAIL_AMOUNT = /Se debitaron:\s*\$\s*(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})\s+USD\b/iu;
+const CARD_PAYMENT_EMAIL_MERCHANT = /Comercio:\s*([^\r\n]+)/iu;
 
 export function parseTakenosPurchase({ title, body }) {
   if (!title.startsWith(PURCHASE_TITLE_PREFIX)) return null;
@@ -100,9 +102,11 @@ function emailAddress(from) {
 }
 
 function parseTakenosEmailPurchase({ text }) {
-  const match = text.match(PURCHASE_EMAIL_BODY);
-  if (!match) return null;
-  const body = `Se realizó un pago exitoso de ${match[1]} USD en ${match[2].trim()}`;
+  const legacyMatch = text.match(PURCHASE_EMAIL_BODY);
+  const amount = legacyMatch?.[1] ?? text.match(CARD_PAYMENT_EMAIL_AMOUNT)?.[1];
+  const merchant = legacyMatch?.[2] ?? text.match(CARD_PAYMENT_EMAIL_MERCHANT)?.[1];
+  if (!amount || !merchant) return null;
+  const body = `Se realizó un pago exitoso de ${amount} USD en ${merchant.trim()}`;
   return parseTakenosPurchase({ title: PURCHASE_TITLE_PREFIX, body });
 }
 

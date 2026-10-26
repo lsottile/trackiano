@@ -152,6 +152,43 @@ test('creates a mapped expense from an authenticated Takenos email', async () =>
   }]);
 });
 
+test('creates a USD expense from the current Takenos card payment email', async () => {
+  const written = [];
+  await withServer({
+    takenosEmailSender: 'noreply@takenos.com',
+    findActiveMerchantMapping: async (merchant) => {
+      assert.equal(merchant, 'COOL HUNTING SRL');
+      return { id: 'mapping-1', merchant, budgetId: 'shopping' };
+    },
+    createExpenseIfNew: async (expense) => {
+      written.push(expense);
+      return { created: true, expenseId: 'expense-1' };
+    },
+  }, async (url) => {
+    const response = await postEmail(url, {
+      id: '18f0a1b2c3d4e5f8',
+      from: 'Takenos <noreply@takenos.com>',
+      subject: '¡Se procesó un pago de COOL HUNTING SRL! 🌮',
+      text: [
+        'Se realizó un pago con tarjeta',
+        'Realizaste un pago exitoso en COOL HUNTING SRL',
+        '- Pagaste: $6200 ARS',
+        '- Se debitaron: $4,39 USD de tu saldo',
+        '- Comercio: COOL HUNTING SRL',
+        '- Tarjeta: ****1106',
+      ].join('\n'),
+    });
+    assert.equal(response.status, 201);
+    assert.deepEqual(await response.json(), { status: 'created' });
+  });
+  assert.deepEqual(written, [{
+    description: 'COOL HUNTING SRL',
+    amount: 4.39,
+    budgetId: 'shopping',
+    ingestId: 'takenos:email:18f0a1b2c3d4e5f8',
+  }]);
+});
+
 test('ignores email from a sender other than the configured Takenos address', async () => {
   let writes = 0;
   await withServer({

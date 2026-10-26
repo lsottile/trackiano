@@ -9,6 +9,7 @@ function loadForwarder({
   responseCode = 201,
   responseBody = { status: 'created' },
   startedAt = '1770000000',
+  gmailReturnsBytes = false,
 } = {}) {
   const createdTriggers = [];
   const deletedTriggers = [];
@@ -23,6 +24,9 @@ function loadForwarder({
   };
   if (startedAt) scriptProperties.TRACKIANO_STARTED_AT = startedAt;
   const text = 'Se realizó un pago exitoso de 20,27 USD en Artista de Café';
+  const messageBody = gmailReturnsBytes
+    ? [...Buffer.from(text)].map((byte) => byte > 127 ? byte - 256 : byte)
+    : Buffer.from(text).toString('base64url');
   const context = {
     console,
     Gmail: {
@@ -41,7 +45,7 @@ function loadForwarder({
               ],
               parts: [{
                 mimeType: 'text/plain',
-                body: { data: Buffer.from(text).toString('base64url') },
+                body: { data: messageBody },
               }],
             },
           }),
@@ -87,7 +91,10 @@ function loadForwarder({
       },
     },
     Utilities: {
-      base64DecodeWebSafe: (value) => Buffer.from(value, 'base64url'),
+      base64DecodeWebSafe: (value) => {
+        if (typeof value !== 'string') throw new Error('Could not decode string.');
+        return Buffer.from(value, 'base64url');
+      },
       newBlob: (value) => ({ getDataAsString: () => Buffer.from(value).toString('utf8') }),
     },
   };
@@ -122,6 +129,15 @@ test('forwards one matching Gmail message and trashes it only after Trackiano ac
     userId: 'me',
     messageId: 'gmail-message-1',
   }]);
+});
+
+test('forwards a message when Apps Script returns its body as decoded bytes', () => {
+  const { context, requests, text } = loadForwarder({ gmailReturnsBytes: true });
+
+  context.forwardTakenosEmails();
+
+  assert.equal(requests.length, 1);
+  assert.equal(JSON.parse(requests[0].options.payload).text, text);
 });
 
 test('leaves a Gmail message in place when Trackiano rejects it', () => {

@@ -22,7 +22,9 @@ function headerValue_(headers, name) {
 
 function plainText_(part) {
   if (part?.mimeType === 'text/plain' && part.body?.data) {
-    const bytes = Utilities.base64DecodeWebSafe(part.body.data);
+    const bytes = typeof part.body.data === 'string'
+      ? Utilities.base64DecodeWebSafe(part.body.data)
+      : part.body.data;
     return Utilities.newBlob(bytes).getDataAsString('UTF-8');
   }
   for (const child of part?.parts ?? []) {
