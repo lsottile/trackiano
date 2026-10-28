@@ -1,6 +1,6 @@
 # Connect Gmail to Trackiano
 
-This one-time setup forwards new Takenos purchase emails to Trackiano every five minutes. It ignores older messages, moves accepted messages to Gmail Trash, and leaves rejected messages in place for retry or inspection.
+This one-time setup forwards new Takenos purchase emails to Trackiano every five minutes. It ignores older messages, processes every matching email independently, moves accepted messages to Gmail Trash, and leaves rejected messages in place for retry or inspection.
 
 ## Before you start
 
@@ -35,6 +35,8 @@ After the next Takenos purchase email arrives:
 
 1. Wait up to five minutes.
 2. Confirm Gmail moved the message to Trash.
-3. Confirm Trackiano created the expense or sent the existing Telegram category prompt.
+3. Confirm Trackiano sent a Telegram expense confirmation with `Consumo de hoy`, or a dedicated category prompt when neither an exact mapping nor a conservative merchant-family rule applies.
+
+When several emails arrive before one trigger run, each accepted email gets its own expense or pending prompt. Categorizing one pending expense does not consume other pending emails from the same merchant; the selected mapping applies only to future arrivals.
 
 If the message remains in the inbox, open **Apps Script → Executions**. Trackiano deliberately leaves rejected messages in place so they can be retried after fixing the sender, endpoint, token, or email format.

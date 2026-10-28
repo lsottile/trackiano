@@ -74,7 +74,7 @@ The long-running bot and automatic summaries use separate Railway services:
 - Bot service: run `npm start` continuously.
 - Notification service: run `npm run notifications` as a Railway cron service.
 - Schedule the notification service periodically in UTC; every 15 minutes is recommended. The command checks calendar periods in `APP_TIMEZONE` and exits after each run.
-- Takenos ingestion service: run `node src/ingest.js` as a separate process. It exposes `POST /ingest/takenos` and requires public HTTP reachability from the device posting notifications, plus `INGEST_TOKEN` and `TAKENOS_ANDROID_PACKAGE`. It also needs `TELEGRAM_TOKEN` and `TELEGRAM_OWNER_ID` to deliver the merchant-selection prompt, and runs the same runtime preflight as the bot (`STORAGE_BACKEND`, `DATABASE_URL`, `PGSSLMODE`). Unknown merchants are persisted first and the owner is prompted in Telegram to pick a category; future purchases from a mapped merchant create expenses directly.
+- Takenos ingestion service: run `node src/ingest.js` as a separate process. It exposes `POST /ingest/takenos` and requires public HTTP reachability from the device posting notifications, plus `INGEST_TOKEN` and `TAKENOS_ANDROID_PACKAGE`. It also needs `TELEGRAM_TOKEN` and `TELEGRAM_OWNER_ID` to deliver merchant prompts and expense confirmations, and runs the same runtime preflight as the bot (`STORAGE_BACKEND`, `DATABASE_URL`, `PGSSLMODE`). Every unknown purchase is persisted and receives its own Telegram category prompt. Selecting a category affects only that purchase and saves the mapping for future purchases.
 
 ### Automatic Takenos email ingestion
 
@@ -96,7 +96,9 @@ The request body is intentionally provider-neutral:
 }
 ```
 
-Trackiano accepts at most 64 KiB, validates the bearer token and exact sender, and stores only the parsed merchant, amount, and stable deduplication ID. A known merchant is booked immediately; an unknown merchant follows the existing Telegram category-selection flow. Retrying the same message ID does not create another expense.
+Trackiano accepts at most 64 KiB, validates the bearer token and exact sender, and stores only the parsed merchant, amount, and stable deduplication ID. Each matching email is processed independently. Exact merchant mappings are applied first; conservative rules recognize common transport, food-delivery, coffee, supermarket, pharmacy, lodging, and subscription names when their destination budget exists. Every other purchase receives its own Telegram category prompt.
+
+Every newly created expense sends a Telegram confirmation with its merchant, amount, category, and accumulated `Consumo de hoy`. Retrying the same message ID creates neither another expense nor another confirmation.
 
 ### Historical Notion rollback setup
 
