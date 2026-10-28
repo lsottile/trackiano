@@ -1,11 +1,17 @@
 import { timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
-import { createMerchantSelectionPromptSender, reportFailure } from './bot.js';
-import { assertRuntimeAndBackend, assertRuntimeEnvironment } from './runtimeConfig.js';
 import {
-  createExpenseIfNew,
+  createIngestedExpenseNotifier,
+  createMerchantSelectionPromptSender,
+  reportFailure,
+} from './bot.js';
+import { assertRuntimeAndBackend, assertRuntimeEnvironment } from './runtimeConfig.js';
+import { findMerchantFamilyBudget } from './merchantCategoryRules.js';
+import {
+  createIngestedExpenseAndGetTotalToday,
   createPendingIngestionIfNew,
   findActiveMerchantMapping,
+  getBudgets,
 } from './storage.js';
 
 const MAX_NOTIFICATION_BODY_BYTES = 4096;
@@ -114,14 +120,31 @@ async function ingestPurchase(purchase, id, dependencies) {
   const ingestId = `takenos:${id}`;
   const merchant = normalizeMerchant(purchase.merchant);
   const mapping = await dependencies.findActiveMerchantMapping(merchant);
-  if (mapping) {
-    const { created } = await dependencies.createExpenseIfNew({
+  const budgets = await dependencies.getBudgets();
+  const budget = mapping
+    ? budgets.find(({ id: budgetId }) => budgetId === mapping.budgetId) ?? null
+    : findMerchantFamilyBudget(merchant, budgets);
+  if (budget) {
+    const result = await dependencies.createIngestedExpenseAndGetTotalToday({
       description: purchase.merchant,
       amount: purchase.amount,
-      budgetId: mapping.budgetId,
+      budgetId: budget.id,
       ingestId,
     });
-    return { status: created ? 'created' : 'duplicate' };
+    if (result.created) {
+      try {
+        await dependencies.notifyExpenseCreated({
+          expenseId: result.expenseId,
+          description: purchase.merchant,
+          amount: purchase.amount,
+          budgetName: budget.name,
+          totalToday: result.totalToday,
+        });
+      } catch {
+        await reportFailure(dependencies.reportOperation, 'ingested_expense_notification');
+      }
+    }
+    return { status: result.created ? 'created' : 'duplicate' };
   }
 
   const { created, row: pending } = await dependencies.createPendingIngestionIfNew({
@@ -147,9 +170,12 @@ export function createIngestServer({
   takenosPackage = process.env.TAKENOS_ANDROID_PACKAGE,
   takenosEmailSender = process.env.TAKENOS_EMAIL_SENDER,
   findActiveMerchantMapping: findMapping = findActiveMerchantMapping,
+  getBudgets: readBudgets = getBudgets,
   createPendingIngestionIfNew: writePending = createPendingIngestionIfNew,
-  createExpenseIfNew: writeExpense = createExpenseIfNew,
+  createIngestedExpenseAndGetTotalToday: writeExpense = createIngestedExpenseAndGetTotalToday,
   requestMerchantSelection = async () => {},
+  notifyExpenseCreated = async () => {},
+  reportOperation = (event) => console.error(JSON.stringify(event)),
 } = {}) {
   if (!token || !takenosPackage) {
     throw new Error('INGEST_TOKEN and TAKENOS_ANDROID_PACKAGE are required');
@@ -157,9 +183,12 @@ export function createIngestServer({
 
   const dependencies = {
     findActiveMerchantMapping: findMapping,
+    getBudgets: readBudgets,
     createPendingIngestionIfNew: writePending,
-    createExpenseIfNew: writeExpense,
+    createIngestedExpenseAndGetTotalToday: writeExpense,
     requestMerchantSelection,
+    notifyExpenseCreated,
+    reportOperation,
   };
   let writes = Promise.resolve();
 
@@ -224,6 +253,7 @@ if (process.argv[1] === new URL(import.meta.url).pathname) {
   const port = Number(process.env.PORT ?? 3000);
   createIngestServer({
     requestMerchantSelection: createMerchantSelectionPromptSender(),
+    notifyExpenseCreated: createIngestedExpenseNotifier(),
   }).listen(port, () => {
     console.log(`Takenos ingestion listening on ${port}`);
   });

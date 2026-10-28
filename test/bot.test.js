@@ -4,6 +4,7 @@ import { Composer } from 'grammy';
 
 import {
   createMerchantSelectionPromptSender,
+  createIngestedExpenseNotifier,
   decodeExtraordinaryExpenseCallback,
   decodeExpenseCallback,
   decodeMerchantCallback,
@@ -567,6 +568,32 @@ test('renders an unknown merchant prompt from all current live budgets', async (
   assert.equal(sent[0][2].reply_markup.inline_keyboard.length, 3);
   assert.equal(sent[0][2].reply_markup.inline_keyboard[0].length, 2);
   assert.equal(sent[0][2].reply_markup.inline_keyboard[2][0].text, 'Cancel');
+});
+
+test('sends an ingested expense confirmation with its action buttons', async () => {
+  const sent = [];
+  const notify = createIngestedExpenseNotifier({
+    ownerId: 42,
+    sendMessage: async (...args) => { sent.push(args); },
+  });
+
+  await notify({
+    expenseId: '44444444-4444-4444-4444-444444444444',
+    description: 'Uber Pay',
+    amount: 12.5,
+    budgetName: 'Transport',
+    totalToday: 32.75,
+  });
+
+  assert.equal(sent[0][0], 42);
+  assert.equal(
+    sent[0][1],
+    'Cargado ✓\nUber Pay: $12.50\nCategoría: Transport\nConsumo de hoy: $32.75',
+  );
+  assert.deepEqual(
+    sent[0][2].reply_markup.inline_keyboard[0].map(({ text }) => text),
+    ['Cambiar', 'Eliminar', '*'],
+  );
 });
 
 test('processes only the selected pending expense and saves its mapping for future purchases', async () => {

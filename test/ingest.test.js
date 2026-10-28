@@ -11,6 +11,10 @@ const sample = {
   body: 'Se realizó un pago exitoso de 20,27 USD en ARTISTA DE CAFE',
   id: '0|com.takenos.app|42|null|10234',
 };
+const unknownSample = {
+  ...sample,
+  body: 'Se realizó un pago exitoso de 20,27 USD en COOL HUNTING SRL',
+};
 
 async function withServer(overrides, run) {
   const server = createIngestServer({
@@ -19,6 +23,12 @@ async function withServer(overrides, run) {
     findActiveMerchantMapping: async () => ({
       id: 'mapping-1', merchant: 'ARTISTA DE CAFE', budgetId: 'food',
     }),
+    getBudgets: async () => [
+      { id: 'food', name: 'Food' },
+      { id: 'coffee', name: 'Coffee & Snacks' },
+      { id: 'shopping', name: 'Shopping' },
+      { id: 'transport', name: 'Transport' },
+    ],
     ...overrides,
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -96,14 +106,14 @@ test('normalizes only accents and whitespace before mapping lookup', () => {
   assert.equal(normalizeMerchant('Café-Bar #2'), 'CAFE-BAR #2');
 });
 
-test('creates a mapped Takenos expense without reading budgets or invoking inference', async () => {
+test('creates a mapped Takenos expense without invoking inference', async () => {
   const written = [];
   await withServer({
     findActiveMerchantMapping: async (merchant) => {
       assert.equal(merchant, 'ARTISTA DE CAFE');
       return { id: 'mapping-1', merchant, budgetId: 'coffee' };
     },
-    createExpenseIfNew: async (expense) => {
+    createIngestedExpenseAndGetTotalToday: async (expense) => {
       written.push(expense);
       return { created: true, expenseId: 'expense-1' };
     },
@@ -126,7 +136,7 @@ test('creates a mapped expense from an authenticated Takenos email', async () =>
   const written = [];
   await withServer({
     takenosEmailSender: 'notifications@takenos.com',
-    createExpenseIfNew: async (expense) => {
+    createIngestedExpenseAndGetTotalToday: async (expense) => {
       written.push(expense);
       return { created: true, expenseId: 'expense-1' };
     },
@@ -160,7 +170,7 @@ test('creates a USD expense from the current Takenos card payment email', async 
       assert.equal(merchant, 'COOL HUNTING SRL');
       return { id: 'mapping-1', merchant, budgetId: 'shopping' };
     },
-    createExpenseIfNew: async (expense) => {
+    createIngestedExpenseAndGetTotalToday: async (expense) => {
       written.push(expense);
       return { created: true, expenseId: 'expense-1' };
     },
@@ -189,11 +199,207 @@ test('creates a USD expense from the current Takenos card payment email', async 
   }]);
 });
 
+test('prefers an exact merchant mapping over an obvious family rule', async () => {
+  const written = [];
+  const notified = [];
+  await withServer({
+    takenosEmailSender: 'notifications@takenos.com',
+    findActiveMerchantMapping: async () => ({ budgetId: 'shopping' }),
+    getBudgets: async () => [
+      { id: 'shopping', name: 'Shopping' },
+      { id: 'transport', name: 'Transport' },
+    ],
+    createIngestedExpenseAndGetTotalToday: async (expense) => {
+      written.push(expense);
+      return { created: true, expenseId: 'expense-1', totalToday: 22.5 };
+    },
+    notifyExpenseCreated: async (expense) => { notified.push(expense); },
+    createPendingIngestionIfNew: async () => assert.fail('exact mapping must not create a pending row'),
+  }, async (url) => {
+    const response = await postEmail(url, {
+      id: 'mapped-uber-1',
+      from: 'Takenos <notifications@takenos.com>',
+      subject: 'Compra aprobada',
+      text: 'Se realizó un pago exitoso de 12,50 USD en UBER-PAY',
+    });
+    assert.equal(response.status, 201);
+  });
+
+  assert.equal(written[0].budgetId, 'shopping');
+  assert.equal(notified[0].budgetName, 'Shopping');
+});
+
+test('classifies an obvious merchant family without prompting', async () => {
+  const written = [];
+  const notified = [];
+  await withServer({
+    takenosEmailSender: 'notifications@takenos.com',
+    findActiveMerchantMapping: async () => null,
+    getBudgets: async () => [{ id: 'transport', name: 'Transport' }],
+    createIngestedExpenseAndGetTotalToday: async (expense) => {
+      written.push(expense);
+      return { created: true, expenseId: 'expense-1', totalToday: 32.5 };
+    },
+    createPendingIngestionIfNew: async () => assert.fail('family rule must not create a pending row'),
+    requestMerchantSelection: async () => assert.fail('family rule must not prompt'),
+    notifyExpenseCreated: async (expense) => { notified.push(expense); },
+  }, async (url) => {
+    const response = await postEmail(url, {
+      id: 'rule-uber-1',
+      from: 'Takenos <notifications@takenos.com>',
+      subject: 'Compra aprobada',
+      text: 'Se realizó un pago exitoso de 12,50 USD en UBER-PAY',
+    });
+    assert.equal(response.status, 201);
+  });
+
+  assert.equal(written[0].budgetId, 'transport');
+  assert.deepEqual(notified, [{
+    expenseId: 'expense-1',
+    description: 'UBER-PAY',
+    amount: 12.5,
+    budgetName: 'Transport',
+    totalToday: 32.5,
+  }]);
+});
+
+test('prompts when an obvious family destination is not a live budget', async () => {
+  const prompts = [];
+  await withServer({
+    takenosEmailSender: 'notifications@takenos.com',
+    findActiveMerchantMapping: async () => null,
+    getBudgets: async () => [{ id: 'food', name: 'Food' }],
+    createIngestedExpenseAndGetTotalToday: async () => assert.fail('missing destination must not write'),
+    createPendingIngestionIfNew: async (pending) => ({
+      created: true,
+      row: { id: 'pending-1', ...pending, status: 'pending' },
+    }),
+    requestMerchantSelection: async (pending) => { prompts.push(pending); },
+  }, async (url) => {
+    const response = await postEmail(url, {
+      id: 'rule-uber-2',
+      from: 'Takenos <notifications@takenos.com>',
+      subject: 'Compra aprobada',
+      text: 'Se realizó un pago exitoso de 12,50 USD en UBER-PAY',
+    });
+    assert.equal(response.status, 202);
+    assert.deepEqual(await response.json(), { status: 'pending' });
+  });
+
+  assert.equal(prompts.length, 1);
+  assert.equal(prompts[0].ingestId, 'takenos:email:rule-uber-2');
+});
+
+test('creates one independent category prompt for each unknown email', async () => {
+  const prompts = [];
+  await withServer({
+    takenosEmailSender: 'notifications@takenos.com',
+    findActiveMerchantMapping: async () => null,
+    getBudgets: async () => [],
+    createPendingIngestionIfNew: async (pending) => ({
+      created: true,
+      row: { id: `pending-${pending.ingestId}`, ...pending, status: 'pending' },
+    }),
+    requestMerchantSelection: async (pending) => { prompts.push(pending); },
+  }, async (url) => {
+    for (const id of ['unknown-1', 'unknown-2']) {
+      const response = await postEmail(url, {
+        id,
+        from: 'Takenos <notifications@takenos.com>',
+        subject: 'Compra aprobada',
+        text: `Se realizó un pago exitoso de 10,00 USD en COMERCIO ${id}`,
+      });
+      assert.equal(response.status, 202);
+    }
+  });
+
+  assert.deepEqual(
+    prompts.map(({ ingestId }) => ingestId),
+    ['takenos:email:unknown-1', 'takenos:email:unknown-2'],
+  );
+});
+
+test('confirms each known email with an increasing daily total', async () => {
+  const notifications = [];
+  let writes = 0;
+  await withServer({
+    takenosEmailSender: 'notifications@takenos.com',
+    createIngestedExpenseAndGetTotalToday: async () => {
+      writes += 1;
+      return {
+        created: true,
+        expenseId: `expense-${writes}`,
+        totalToday: writes * 10,
+      };
+    },
+    notifyExpenseCreated: async (expense) => { notifications.push(expense); },
+  }, async (url) => {
+    for (const id of ['known-1', 'known-2']) {
+      const response = await postEmail(url, {
+        id,
+        from: 'Takenos <notifications@takenos.com>',
+        subject: 'Compra aprobada',
+        text: 'Se realizó un pago exitoso de 10,00 USD en ARTISTA DE CAFE',
+      });
+      assert.equal(response.status, 201);
+    }
+  });
+
+  assert.deepEqual(notifications.map(({ totalToday }) => totalToday), [10, 20]);
+  assert.deepEqual(notifications.map(({ expenseId }) => expenseId), ['expense-1', 'expense-2']);
+});
+
+test('does not notify a duplicate email delivery', async () => {
+  await withServer({
+    takenosEmailSender: 'notifications@takenos.com',
+    createIngestedExpenseAndGetTotalToday: async () => ({
+      created: false,
+      expenseId: null,
+      totalToday: null,
+    }),
+    notifyExpenseCreated: async () => assert.fail('duplicate must not notify'),
+  }, async (url) => {
+    const response = await postEmail(url, {
+      id: 'duplicate-1',
+      from: 'Takenos <notifications@takenos.com>',
+      subject: 'Compra aprobada',
+      text: 'Se realizó un pago exitoso de 10,00 USD en ARTISTA DE CAFE',
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { status: 'duplicate' });
+  });
+});
+
+test('keeps a created email accepted when its Telegram confirmation fails', async () => {
+  const reports = [];
+  await withServer({
+    takenosEmailSender: 'notifications@takenos.com',
+    createIngestedExpenseAndGetTotalToday: async () => ({
+      created: true,
+      expenseId: 'expense-1',
+      totalToday: 10,
+    }),
+    notifyExpenseCreated: async () => { throw new Error('Telegram unavailable'); },
+    reportOperation: async (event) => { reports.push(event); },
+  }, async (url) => {
+    const response = await postEmail(url, {
+      id: 'notify-failure-1',
+      from: 'Takenos <notifications@takenos.com>',
+      subject: 'Compra aprobada',
+      text: 'Se realizó un pago exitoso de 10,00 USD en ARTISTA DE CAFE',
+    });
+    assert.equal(response.status, 201);
+    assert.deepEqual(await response.json(), { status: 'created' });
+  });
+
+  assert.deepEqual(reports, [{ operation: 'ingested_expense_notification', outcome: 'failure' }]);
+});
+
 test('ignores email from a sender other than the configured Takenos address', async () => {
   let writes = 0;
   await withServer({
     takenosEmailSender: 'notifications@takenos.com',
-    createExpenseIfNew: async () => {
+    createIngestedExpenseAndGetTotalToday: async () => {
       writes += 1;
       return { created: true, expenseId: 'expense-1' };
     },
@@ -215,7 +421,7 @@ test('ignores email from a sender other than the configured Takenos address', as
 test('accepts a Takenos email body larger than an Android notification payload', async () => {
   await withServer({
     takenosEmailSender: 'notifications@takenos.com',
-    createExpenseIfNew: async () => ({ created: true, expenseId: 'expense-1' }),
+    createIngestedExpenseAndGetTotalToday: async () => ({ created: true, expenseId: 'expense-1' }),
   }, async (url) => {
     const response = await postEmail(url, {
       id: '18f0a1b2c3d4e5f6',
@@ -231,7 +437,7 @@ test('parses a Takenos purchase when the email wraps the payment details', async
   const written = [];
   await withServer({
     takenosEmailSender: 'notifications@takenos.com',
-    createExpenseIfNew: async (expense) => {
+    createIngestedExpenseAndGetTotalToday: async (expense) => {
       written.push(expense);
       return { created: true, expenseId: 'expense-1' };
     },
@@ -281,12 +487,12 @@ test('persists an unknown purchase before requesting the owner selection', async
       events.push('persist');
       return {
         created: true,
-        row: { id: 'pending-1', merchant: 'ARTISTA DE CAFE', status: 'pending' },
+        row: { id: 'pending-1', merchant: 'COOL HUNTING SRL', status: 'pending' },
       };
     },
     requestMerchantSelection: async () => { events.push('prompt'); },
   }, async (url) => {
-    assert.equal((await post(url, sample)).status, 202);
+    assert.equal((await post(url, unknownSample)).status, 202);
   });
   assert.deepEqual(events, ['persist', 'prompt']);
 });
@@ -300,11 +506,11 @@ test('returns pending and logs context when the durable row exists but Telegram 
       findActiveMerchantMapping: async () => null,
       createPendingIngestionIfNew: async () => ({
         created: true,
-        row: { id: 'pending-1', merchant: 'ARTISTA DE CAFE', status: 'pending' },
+        row: { id: 'pending-1', merchant: 'COOL HUNTING SRL', status: 'pending' },
       }),
       requestMerchantSelection: async () => { throw new Error('Telegram unavailable'); },
     }, async (url) => {
-      assert.equal((await post(url, sample)).status, 202);
+      assert.equal((await post(url, unknownSample)).status, 202);
     });
   } finally {
     console.error = originalError;
@@ -312,7 +518,7 @@ test('returns pending and logs context when the durable row exists but Telegram 
   assert.deepEqual(errors, [JSON.stringify({
     operation: 'merchant_selection_prompt',
     outcome: 'failure',
-    merchant: 'ARTISTA DE CAFE',
+    merchant: 'COOL HUNTING SRL',
     ingestId: 'takenos:0|com.takenos.app|42|null|10234',
   })]);
 });
@@ -323,7 +529,7 @@ test('returns 500 and does not prompt when durable pending persistence fails', a
     findActiveMerchantMapping: async () => null,
     createPendingIngestionIfNew: async () => { throw new Error('Storage unavailable'); },
     requestMerchantSelection: async () => { prompted = true; },
-  }, async (url) => assert.equal((await post(url, sample)).status, 500));
+  }, async (url) => assert.equal((await post(url, unknownSample)).status, 500));
   assert.equal(prompted, false);
 });
 
@@ -333,10 +539,10 @@ test('does not prompt a duplicate pending row that has already been processed', 
     findActiveMerchantMapping: async () => null,
     createPendingIngestionIfNew: async () => ({
       created: false,
-      row: { id: 'pending-1', merchant: 'ARTISTA DE CAFE', status: 'processed' },
+      row: { id: 'pending-1', merchant: 'COOL HUNTING SRL', status: 'processed' },
     }),
     requestMerchantSelection: async () => { prompts += 1; },
-  }, async (url) => assert.equal((await post(url, sample)).status, 202));
+  }, async (url) => assert.equal((await post(url, unknownSample)).status, 202));
   assert.equal(prompts, 0);
 });
 
@@ -353,22 +559,22 @@ test('does not re-prompt when a still-pending notification is redelivered', asyn
         pendingCreates += 1;
         return {
           created: true,
-          row: { id: 'pending-1', merchant: 'ARTISTA DE CAFE', status: 'pending' },
+          row: { id: 'pending-1', merchant: 'COOL HUNTING SRL', status: 'pending' },
         };
       }
       return {
         created: false,
-        row: { id: 'pending-1', merchant: 'ARTISTA DE CAFE', status: 'pending' },
+        row: { id: 'pending-1', merchant: 'COOL HUNTING SRL', status: 'pending' },
       };
     },
-    createExpenseIfNew: async () => {
+    createIngestedExpenseAndGetTotalToday: async () => {
       expenseWrites += 1;
       return { created: true, expenseId: 'expense-1' };
     },
     requestMerchantSelection: async () => { prompts += 1; },
   }, async (url) => {
-    assert.equal((await post(url, sample)).status, 202);
-    assert.equal((await post(url, sample)).status, 202);
+    assert.equal((await post(url, unknownSample)).status, 202);
+    assert.equal((await post(url, unknownSample)).status, 202);
   });
   assert.equal(pendingCreates, 1);
   assert.equal(expenseWrites, 0);
@@ -402,7 +608,7 @@ test('parses dot thousands separators in the purchase amount', () => {
 test('ignores Google Wallet even when its text resembles a Takenos purchase', async () => {
   let writes = 0;
   await withServer({
-    createExpenseIfNew: async () => {
+    createIngestedExpenseAndGetTotalToday: async () => {
       writes += 1;
       return { created: true, expenseId: 'expense-1' };
     },
@@ -454,7 +660,7 @@ test('rejects malformed notification payloads', async () => {
 
 test('handles a 4096-byte payload normally', async () => {
   await withServer({
-    createExpenseIfNew: async () => ({ created: true, expenseId: 'expense-1' }),
+    createIngestedExpenseAndGetTotalToday: async () => ({ created: true, expenseId: 'expense-1' }),
   }, async (url) => {
     const response = await request(url, {
       headers: {
@@ -479,7 +685,7 @@ test('rejects a 4097-byte streamed payload without Content-Length', async () => 
 test('rejects a non-purchase Takenos notification without writing an expense', async () => {
   let writes = 0;
   await withServer({
-    createExpenseIfNew: async () => {
+    createIngestedExpenseAndGetTotalToday: async () => {
       writes += 1;
       return { created: true, expenseId: 'expense-1' };
     },
@@ -495,7 +701,7 @@ test('rejects a non-purchase Takenos notification without writing an expense', a
 
 test('returns a server error when a known expense persistence fails', async () => {
   await withServer({
-    createExpenseIfNew: async () => {
+    createIngestedExpenseAndGetTotalToday: async () => {
       throw new Error('Storage unavailable');
     },
   }, async (url) => {
@@ -523,7 +729,7 @@ test('accepts a stable Android notification key and deduplicates the Takenos pur
   const seenIds = new Set();
   const written = [];
   await withServer({
-    createExpenseIfNew: async (expense) => {
+    createIngestedExpenseAndGetTotalToday: async (expense) => {
       if (seenIds.has(expense.ingestId)) return { created: false, expenseId: null };
       seenIds.add(expense.ingestId);
       written.push(expense);

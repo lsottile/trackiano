@@ -178,6 +178,18 @@ export function createMerchantSelectionPromptSender({
   };
 }
 
+export function createIngestedExpenseNotifier({
+  ownerId = OWNER_ID,
+  sendMessage = (...args) => new Api(process.env.TELEGRAM_TOKEN).sendMessage(...args),
+} = {}) {
+  return async ({ expenseId, description, amount, budgetName, totalToday }) =>
+    sendMessage(
+      ownerId,
+      formatIngestedExpenseConfirmation({ description, amount, budgetName, totalToday }),
+      expenseActionKeyboard(expenseId),
+    );
+}
+
 export function formatIngestedExpenseConfirmation({
   description,
   amount,

@@ -10,6 +10,7 @@ function loadForwarder({
   responseBody = { status: 'created' },
   startedAt = '1770000000',
   gmailReturnsBytes = false,
+  messageIds = ['gmail-message-1'],
 } = {}) {
   const createdTriggers = [];
   const deletedTriggers = [];
@@ -34,10 +35,10 @@ function loadForwarder({
         Messages: {
           list: (userId, options) => {
             listCalls.push({ userId, options });
-            return { messages: [{ id: 'gmail-message-1' }] };
+            return { messages: messageIds.map((id) => ({ id })) };
           },
-          get: () => ({
-            id: 'gmail-message-1',
+          get: (userId, messageId) => ({
+            id: messageId,
             payload: {
               headers: [
                 { name: 'From', value: 'Takenos <notifications@takenos.com>' },
@@ -138,6 +139,19 @@ test('forwards a message when Apps Script returns its body as decoded bytes', ()
 
   assert.equal(requests.length, 1);
   assert.equal(JSON.parse(requests[0].options.payload).text, text);
+});
+
+test('forwards and trashes multiple matching Gmail messages independently', () => {
+  const messageIds = ['gmail-message-1', 'gmail-message-2', 'gmail-message-3'];
+  const { context, requests, trashedMessages } = loadForwarder({ messageIds });
+
+  context.forwardTakenosEmails();
+
+  assert.deepEqual(
+    requests.map(({ options }) => JSON.parse(options.payload).id),
+    messageIds,
+  );
+  assert.deepEqual(trashedMessages.map(({ messageId }) => messageId), messageIds);
 });
 
 test('leaves a Gmail message in place when Trackiano rejects it', () => {
