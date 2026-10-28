@@ -647,6 +647,60 @@ test('creates an ingest-deduped expense and reports the conflict on redelivery',
   assert.equal(inserts, 2);
 });
 
+test('creates one ingested expense and returns its post-insert daily total', async () => {
+  const database = fakeDatabase((sql, params) => {
+    if (sql.startsWith('INSERT INTO expenses')) {
+      assert.match(sql, /ON CONFLICT \(user_id, ingest_id\) WHERE ingest_id IS NOT NULL DO NOTHING/);
+      assert.deepEqual(params, [
+        userId, budgetId, 'ARTISTA DE CAFE', 20.27, '2026-07-19', false, 'takenos:email:message-1',
+      ]);
+      return { rows: [{ id: expenseId }], rowCount: 1 };
+    }
+    if (sql.includes('COALESCE(SUM(amount), 0)')) {
+      assert.deepEqual(params, [userId, '2026-07-19']);
+      return { rows: [{ total: '30.27' }], rowCount: 1 };
+    }
+  });
+  const repository = createPostgresRepository(database, {
+    telegramUserId: 42,
+    timeZone: 'America/Guatemala',
+  });
+
+  const result = await repository.createIngestedExpenseAndGetTotalToday({
+    description: 'ARTISTA DE CAFE',
+    amount: 20.27,
+    budgetId,
+    ingestId: 'takenos:email:message-1',
+    now: new Date('2026-07-20T05:30:00.000Z'),
+  });
+
+  assert.deepEqual(result, { created: true, expenseId, totalToday: 30.27 });
+  assert.equal(database.calls.length, 4);
+  assert.equal(database.calls[0].sql, 'SELECT id FROM users WHERE telegram_user_id = $1');
+  assert.equal(database.calls[1].sql, 'TRANSACTION');
+  assert.match(database.calls[2].sql, /^INSERT INTO expenses/);
+  assert.match(database.calls[3].sql, /COALESCE\(SUM\(amount\), 0\)/);
+});
+
+test('does not query the daily total when an ingested expense is a duplicate', async () => {
+  const database = fakeDatabase((sql) => {
+    if (sql.startsWith('INSERT INTO expenses')) return { rows: [], rowCount: 0 };
+    if (sql.includes('COALESCE(SUM(amount), 0)')) {
+      assert.fail('duplicate ingestion must not query the daily total');
+    }
+  });
+  const repository = createPostgresRepository(database, { telegramUserId: 42 });
+
+  const result = await repository.createIngestedExpenseAndGetTotalToday({
+    description: 'ARTISTA DE CAFE',
+    amount: 20.27,
+    budgetId,
+    ingestId: 'takenos:email:message-1',
+  });
+
+  assert.deepEqual(result, { created: false, expenseId: null, totalToday: null });
+});
+
 test('flows an optional ingest id through the shared expense insert', async () => {
   const database = fakeDatabase((sql, params) => {
     if (sql.startsWith('INSERT INTO expenses')) {

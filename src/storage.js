@@ -33,6 +33,7 @@ const STORAGE_METHODS = [
   'markPendingIngestionProcessed',
   'cancelPendingIngestion',
   'createExpenseIfNew',
+  'createIngestedExpenseAndGetTotalToday',
 ];
 
 export function createStorage({ postgresRepository } = {}) {
@@ -82,3 +83,5 @@ export const getPendingIngestionsByMerchant = (...args) => callApplicationStorag
 export const markPendingIngestionProcessed = (...args) => callApplicationStorage('markPendingIngestionProcessed', args);
 export const cancelPendingIngestion = (...args) => callApplicationStorage('cancelPendingIngestion', args);
 export const createExpenseIfNew = (...args) => callApplicationStorage('createExpenseIfNew', args);
+export const createIngestedExpenseAndGetTotalToday = (...args) =>
+  callApplicationStorage('createIngestedExpenseAndGetTotalToday', args);

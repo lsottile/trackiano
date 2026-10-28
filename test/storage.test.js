@@ -19,6 +19,7 @@ test('exposes the PostgreSQL feature methods', async () => {
       recategorizeExpenseAndLearn: async (...args) => calls.push(['change', ...args]),
       markExpenseExtraordinary: async (...args) => calls.push(['extraordinary', ...args]),
       getRecentExpenses: async (...args) => calls.push(['recent', ...args]),
+      createIngestedExpenseAndGetTotalToday: async (...args) => calls.push(['ingested', ...args]),
     },
   });
 
@@ -26,10 +27,12 @@ test('exposes the PostgreSQL feature methods', async () => {
   await storage.recategorizeExpenseAndLearn('expense', 'budget');
   await storage.markExpenseExtraordinary('expense');
   await storage.getRecentExpenses(20, { maxAmount: 100 });
+  await storage.createIngestedExpenseAndGetTotalToday({ ingestId: 'takenos:1' });
   assert.deepEqual(calls, [
     ['find', 'a'.repeat(64)],
     ['change', 'expense', 'budget'],
     ['extraordinary', 'expense'],
     ['recent', 20, { maxAmount: 100 }],
+    ['ingested', { ingestId: 'takenos:1' }],
   ]);
 });

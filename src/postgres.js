@@ -600,6 +600,39 @@ export function createPostgresRepository(database, {
       );
       return { created: result.rows.length === 1, expenseId: result.rows[0]?.id ?? null };
     },
+
+    async createIngestedExpenseAndGetTotalToday(expense) {
+      const userId = await getUserId();
+      const now = expense.now ?? new Date();
+      return database.transaction(async (transaction) => {
+        const result = await transaction.query(
+          `INSERT INTO expenses
+            (user_id, budget_id, description, amount, expense_date, is_extraordinary, ingest_id)
+           VALUES ($1, $2, $3, $4, $5,
+             $6 OR EXISTS (
+               SELECT 1 FROM budgets
+               WHERE id = $2 AND user_id = $1 AND lower(name) = 'investments'
+             ), $7)
+           ON CONFLICT (user_id, ingest_id) WHERE ingest_id IS NOT NULL
+           DO NOTHING
+           RETURNING id`,
+          [
+            userId,
+            expense.budgetId,
+            expense.description,
+            roundMoney(expense.amount),
+            formatDateInTimeZone(now, timeZone),
+            Boolean(expense.isExtraordinary),
+            expense.ingestId ?? null,
+          ],
+        );
+        if (result.rows.length !== 1) {
+          return { created: false, expenseId: null, totalToday: null };
+        }
+        const totalToday = await totalTodayWith(transaction, userId, now);
+        return { created: true, expenseId: result.rows[0].id, totalToday };
+      });
+    },
   };
 }
 
