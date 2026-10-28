@@ -2,12 +2,12 @@ const rules = Object.freeze([
   Object.freeze({
     budgetName: 'Transport',
     tokens: Object.freeze(['UBER', 'CABIFY', 'TAXI', 'DIDI']),
-    brandPrefixes: Object.freeze(['UBER', 'CABIFY', 'DIDI']),
+    brandPrefixes: Object.freeze([]),
   }),
   Object.freeze({
     budgetName: 'Restaurants',
     tokens: Object.freeze(['PEDIDOSYA', 'RAPPI']),
-    brandPrefixes: Object.freeze(['PEDIDOSYA', 'RAPPI']),
+    brandPrefixes: Object.freeze(['PEDIDOSYA']),
   }),
   Object.freeze({
     budgetName: 'Coffee & Snacks',

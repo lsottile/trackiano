@@ -557,10 +557,11 @@ test('renders an unknown merchant prompt from all current live budgets', async (
   await prompt({
     id: '44444444-4444-4444-4444-444444444444',
     merchant: 'ARTISTA DE CAFE',
+    amount: 12.5,
     status: 'pending',
   });
 
-  assert.match(sent[0][1], /ARTISTA DE CAFE/);
+  assert.equal(sent[0][1], 'Select a category for ARTISTA DE CAFE ($12.50):');
   assert.deepEqual(
     sent[0][2].reply_markup.inline_keyboard.flat().map((button) => button.text),
     ['Coffee & Snacks', 'Entertainment', 'Restaurants', 'Cancel'],

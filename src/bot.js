@@ -164,17 +164,21 @@ export function createMerchantSelectionPromptSender({
         callback_data: encodeMerchantCallback("select", pending.id, budget.id),
       })));
     }
-    return sendMessage(ownerId, `Select a category for ${pending.merchant}:`, {
-      reply_markup: {
-        inline_keyboard: [
-          ...budgetButtons,
-          [{
-            text: "Cancel",
-            callback_data: encodeMerchantCallback("cancel", pending.id),
-          }],
-        ],
+    return sendMessage(
+      ownerId,
+      `Select a category for ${pending.merchant} ($${formatMoney(pending.amount)}):`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            ...budgetButtons,
+            [{
+              text: "Cancel",
+              callback_data: encodeMerchantCallback("cancel", pending.id),
+            }],
+          ],
+        },
       },
-    });
+    );
   };
 }
 

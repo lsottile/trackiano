@@ -46,6 +46,8 @@ test('does not match family words embedded inside unrelated words', () => {
   assert.equal(findMerchantFamilyBudget('MARKETING SERVICES', budgets), null);
   assert.equal(findMerchantFamilyBudget('COFFEETABLE FURNITURE', budgets), null);
   assert.equal(findMerchantFamilyBudget('HOTELERIA SUPPLIES', budgets), null);
+  assert.equal(findMerchantFamilyBudget('UBERIZATION LABS', budgets), null);
+  assert.equal(findMerchantFamilyBudget('RAPPIDAMENTE STORE', budgets), null);
 });
 
 test('returns null when the matched family destination is not a live budget', () => {
