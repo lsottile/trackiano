@@ -13,7 +13,7 @@ import {
   handleDashboardCommand,
   handleExpenseMessage,
   handleWeeklyAverage,
-  processPendingMerchant,
+  processPendingExpense,
   registerExpenseActionHandlers,
   registerMerchantMappingHandlers,
   registerExtraordinaryExpenseConfirmationHandlers,
@@ -569,41 +569,49 @@ test('renders an unknown merchant prompt from all current live budgets', async (
   assert.equal(sent[0][2].reply_markup.inline_keyboard[2][0].text, 'Cancel');
 });
 
-test('saves the mapping before processing every pending purchase for that merchant', async () => {
+test('processes only the selected pending expense and saves its mapping for future purchases', async () => {
   const events = [];
-  const result = await processPendingMerchant('ARTISTA DE CAFE', 'coffee', {
-    saveMerchantMapping: async () => { events.push('mapping'); },
-    getPendingIngestionsByMerchant: async () => [
-      { id: 'pending-1', ingestId: 'takenos:1', description: 'Artista de Cafe', amount: 10 },
-      { id: 'pending-2', ingestId: 'takenos:2', description: 'ARTISTA DE CAFE', amount: 20 },
-    ],
-    createExpenseIfNew: async (expense) => {
+  const pending = {
+    id: 'pending-1',
+    ingestId: 'takenos:1',
+    merchant: 'ARTISTA DE CAFE',
+    description: 'Artista de Cafe',
+    amount: 10,
+  };
+  const budget = { id: 'coffee', name: 'Coffee & Snacks' };
+  const result = await processPendingExpense(pending, budget, {
+    saveMerchantMapping: async (merchant, budgetId) => {
+      events.push(`mapping:${merchant}:${budgetId}`);
+    },
+    createIngestedExpenseAndGetTotalToday: async (expense) => {
       events.push(`expense:${expense.ingestId}`);
-      return {
-        created: expense.ingestId === 'takenos:1',
-        expenseId: expense.ingestId === 'takenos:1' ? 'expense-1' : null,
-      };
+      return { created: true, expenseId: 'expense-1', totalToday: 30 };
     },
     markPendingIngestionProcessed: async (id) => { events.push(`processed:${id}`); },
   });
   assert.deepEqual(events, [
-    'mapping', 'expense:takenos:1', 'processed:pending-1',
-    'expense:takenos:2', 'processed:pending-2',
+    'mapping:ARTISTA DE CAFE:coffee',
+    'expense:takenos:1',
+    'processed:pending-1',
   ]);
-  assert.deepEqual(result, { created: 1, duplicates: 1 });
+  assert.deepEqual(result, { created: true, expenseId: 'expense-1', totalToday: 30 });
 });
 
 test('books a pending purchase on its original purchase date', async () => {
   const purchaseDate = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
   const written = [];
-  await processPendingMerchant('ARTISTA DE CAFE', 'coffee', {
+  await processPendingExpense({
+    id: 'pending-1',
+    ingestId: 'takenos:1',
+    merchant: 'ARTISTA DE CAFE',
+    description: 'Artista',
+    amount: 10,
+    createdAt: purchaseDate,
+  }, { id: 'coffee', name: 'Coffee & Snacks' }, {
     saveMerchantMapping: async () => {},
-    getPendingIngestionsByMerchant: async () => [
-      { id: 'pending-1', ingestId: 'takenos:1', description: 'Artista', amount: 10, createdAt: purchaseDate },
-    ],
-    createExpenseIfNew: async (expense) => {
+    createIngestedExpenseAndGetTotalToday: async (expense) => {
       written.push(expense);
-      return { created: true, expenseId: 'expense-1' };
+      return { created: true, expenseId: 'expense-1', totalToday: 10 };
     },
     markPendingIngestionProcessed: async () => {},
   });
@@ -613,25 +621,53 @@ test('books a pending purchase on its original purchase date', async () => {
 
 test('leaves a row pending if its expense write fails', async () => {
   let marked = false;
-  await assert.rejects(processPendingMerchant('ARTISTA DE CAFE', 'coffee', {
+  await assert.rejects(processPendingExpense({
+    id: 'pending-1',
+    ingestId: 'takenos:1',
+    merchant: 'ARTISTA DE CAFE',
+    description: 'Artista',
+    amount: 10,
+  }, { id: 'coffee', name: 'Coffee & Snacks' }, {
     saveMerchantMapping: async () => {},
-    getPendingIngestionsByMerchant: async () => [
-      { id: 'pending-1', ingestId: 'takenos:1', description: 'Artista', amount: 10 },
-    ],
-    createExpenseIfNew: async () => { throw new Error('Storage unavailable'); },
+    createIngestedExpenseAndGetTotalToday: async () => { throw new Error('Storage unavailable'); },
     markPendingIngestionProcessed: async () => { marked = true; },
   }), /Storage unavailable/);
   assert.equal(marked, false);
 });
 
-test('selects a live budget and processes the pending merchant end-to-end', async () => {
+test('marks a duplicate pending expense processed without creating it again', async () => {
+  const marked = [];
+  const result = await processPendingExpense({
+    id: 'pending-1',
+    ingestId: 'takenos:1',
+    merchant: 'ARTISTA DE CAFE',
+    description: 'Artista',
+    amount: 10,
+  }, { id: 'coffee', name: 'Coffee & Snacks' }, {
+    saveMerchantMapping: async () => {},
+    createIngestedExpenseAndGetTotalToday: async () => ({
+      created: false,
+      expenseId: null,
+      totalToday: null,
+    }),
+    markPendingIngestionProcessed: async (id) => marked.push(id),
+  });
+
+  assert.deepEqual(result, { created: false, expenseId: null, totalToday: null });
+  assert.deepEqual(marked, ['pending-1']);
+});
+
+test('selects a live budget and confirms one pending expense with its daily total', async () => {
   const replies = [];
   const events = [];
   const composer = new Composer();
   registerMerchantMappingHandlers(composer, {
     getPendingIngestion: async () => ({
       id: '11111111-1111-1111-1111-111111111111',
+      ingestId: 'takenos:1',
       merchant: 'ARTISTA DE CAFE',
+      description: 'Artista de Cafe',
+      amount: 10,
       status: 'pending',
     }),
     getBudgets: async () => [
@@ -641,12 +677,13 @@ test('selects a live budget and processes the pending merchant end-to-end', asyn
     saveMerchantMapping: async (merchant, budgetId) => {
       events.push(`mapping:${merchant}:${budgetId}`);
     },
-    getPendingIngestionsByMerchant: async () => [
-      { id: 'pending-1', ingestId: 'takenos:1', description: 'Artista de Cafe', amount: 10 },
-    ],
-    createExpenseIfNew: async (expense) => {
+    createIngestedExpenseAndGetTotalToday: async (expense) => {
       events.push(`expense:${expense.ingestId}`);
-      return { created: true, expenseId: 'expense-1' };
+      return {
+        created: true,
+        expenseId: '44444444-4444-4444-4444-444444444444',
+        totalToday: 42.5,
+      };
     },
     markPendingIngestionProcessed: async (id) => { events.push(`processed:${id}`); },
   });
@@ -661,14 +698,21 @@ test('selects a live budget and processes the pending merchant end-to-end', asyn
     update: { callback_query: callbackQuery },
     callbackQuery,
     answerCallbackQuery: async () => {},
-    reply: async (text) => replies.push(text),
+    reply: async (...args) => replies.push(args),
   }, () => assert.fail('select callback must short-circuit'));
   assert.deepEqual(events, [
     'mapping:ARTISTA DE CAFE:33333333-3333-3333-3333-333333333333',
     'expense:takenos:1',
-    'processed:pending-1',
+    'processed:11111111-1111-1111-1111-111111111111',
   ]);
-  assert.match(replies[0], /Mapped ARTISTA DE CAFE; processed 1 pending purchase\(s\)\./);
+  assert.equal(
+    replies[0][0],
+    'Cargado ✓\nArtista de Cafe: $10.00\nCategoría: Entertainment\nConsumo de hoy: $42.50',
+  );
+  assert.deepEqual(
+    replies[0][1].reply_markup.inline_keyboard[0].map(({ text }) => text),
+    ['Cambiar', 'Eliminar', '*'],
+  );
 });
 
 test('cancel callback deletes the pending ingestion without mapping or expense writes', async () => {
@@ -682,7 +726,7 @@ test('cancel callback deletes the pending ingestion without mapping or expense w
     } : null,
     cancelPendingIngestion: async (id) => events.push(`cancel:${id}`),
     saveMerchantMapping: async () => events.push('mapping'),
-    processPendingMerchant: async () => events.push('process'),
+    processPendingExpense: async () => events.push('process'),
   });
   const callbackQuery = { data: encodeMerchantCallback('cancel', pendingId) };
 
@@ -707,7 +751,7 @@ test('cancel callback rejects stale pending rows without deleting or processing'
       status: 'processed',
     }),
     cancelPendingIngestion: async () => assert.fail('must not delete stale row'),
-    processPendingMerchant: async () => assert.fail('must not process stale row'),
+    processPendingExpense: async () => assert.fail('must not process stale row'),
   });
   const callbackQuery = {
     data: encodeMerchantCallback(
@@ -738,7 +782,7 @@ test('rejects a stale selected budget without changing mapping or pending rows',
     getBudgets: async () => [{
       id: '22222222-2222-2222-2222-222222222222', name: 'Coffee & Snacks',
     }],
-    processPendingMerchant: async () => assert.fail('must not process stale budget'),
+    processPendingExpense: async () => assert.fail('must not process stale budget'),
   });
   const callbackQuery = {
     data: encodeMerchantCallback(
@@ -768,7 +812,7 @@ test('rejects an already-processed pending row without writing again', async () 
     getBudgets: async () => [{
       id: '22222222-2222-2222-2222-222222222222', name: 'Coffee & Snacks',
     }],
-    processPendingMerchant: async () => assert.fail('must not reprocess a handled row'),
+    processPendingExpense: async () => assert.fail('must not reprocess a handled row'),
   });
   const callbackQuery = {
     data: encodeMerchantCallback(
@@ -799,7 +843,7 @@ test('reports pending merchant processing failures', async () => {
     getBudgets: async () => [{
       id: '22222222-2222-2222-2222-222222222222', name: 'Coffee & Snacks',
     }],
-    processPendingMerchant: async () => { throw new Error('Storage unavailable'); },
+    processPendingExpense: async () => { throw new Error('Storage unavailable'); },
     reportOperation: async (report) => { reports.push(report); },
   });
   const callbackQuery = {

@@ -21,9 +21,8 @@ import {
   markExpenseExtraordinary,
   findLearnedBudget,
   recategorizeExpenseAndLearn,
-  createExpenseIfNew,
+  createIngestedExpenseAndGetTotalToday,
   getPendingIngestion,
-  getPendingIngestionsByMerchant,
   markPendingIngestionProcessed,
   cancelPendingIngestion,
   saveMerchantMapping,
@@ -179,37 +178,39 @@ export function createMerchantSelectionPromptSender({
   };
 }
 
-export async function processPendingMerchant(merchant, budgetId, dependencies) {
-  await dependencies.saveMerchantMapping(merchant, budgetId);
-  const rows = await dependencies.getPendingIngestionsByMerchant(merchant);
-  let created = 0;
-  let duplicates = 0;
-  for (const row of rows) {
-    const { created: didCreate } = await dependencies.createExpenseIfNew({
-      description: row.description,
-      amount: row.amount,
-      budgetId,
-      ingestId: row.ingestId,
-      now: row.createdAt,
-    });
-    if (didCreate) created += 1;
-    else duplicates += 1;
-    await dependencies.markPendingIngestionProcessed(row.id);
-  }
-  return { created, duplicates };
+export function formatIngestedExpenseConfirmation({
+  description,
+  amount,
+  budgetName,
+  totalToday,
+}) {
+  return `Cargado ✓\n${description}: $${formatMoney(amount)}\n` +
+    `Categoría: ${budgetName}\nConsumo de hoy: $${formatMoney(totalToday)}`;
+}
+
+export async function processPendingExpense(pending, budget, dependencies) {
+  await dependencies.saveMerchantMapping(pending.merchant, budget.id);
+  const result = await dependencies.createIngestedExpenseAndGetTotalToday({
+    description: pending.description,
+    amount: pending.amount,
+    budgetId: budget.id,
+    ingestId: pending.ingestId,
+    now: pending.createdAt,
+  });
+  await dependencies.markPendingIngestionProcessed(pending.id);
+  return result;
 }
 
 export function registerMerchantMappingHandlers(composer, {
   getPendingIngestion: readPendingIngestion = getPendingIngestion,
   getBudgets: readBudgets = getBudgets,
-  processPendingMerchant: process = processPendingMerchant,
+  processPendingExpense: process = processPendingExpense,
   saveMerchantMapping: saveMapping = saveMerchantMapping,
-    getPendingIngestionsByMerchant: readPendingIngestions = getPendingIngestionsByMerchant,
-    createExpenseIfNew: writeExpense = createExpenseIfNew,
-    markPendingIngestionProcessed: markProcessed = markPendingIngestionProcessed,
-    cancelPendingIngestion: cancelPending = cancelPendingIngestion,
-    reportOperation = defaultOperationReporter,
-  } = {}) {
+  createIngestedExpenseAndGetTotalToday: writeExpense = createIngestedExpenseAndGetTotalToday,
+  markPendingIngestionProcessed: markProcessed = markPendingIngestionProcessed,
+  cancelPendingIngestion: cancelPending = cancelPendingIngestion,
+  reportOperation = defaultOperationReporter,
+} = {}) {
   return composer.on("callback_query:data", async (ctx, next) => {
     const callback = decodeMerchantCallback(ctx.callbackQuery.data);
     if (!callback) return next();
@@ -236,14 +237,20 @@ export function registerMerchantMappingHandlers(composer, {
     }
 
     try {
-      const result = await process(pending.merchant, budget.id, {
+      const result = await process(pending, budget, {
         saveMerchantMapping: saveMapping,
-        getPendingIngestionsByMerchant: readPendingIngestions,
-        createExpenseIfNew: writeExpense,
+        createIngestedExpenseAndGetTotalToday: writeExpense,
         markPendingIngestionProcessed: markProcessed,
       });
+      if (!result.created) return ctx.reply("Este gasto ya estaba cargado.");
       return ctx.reply(
-        `Mapped ${pending.merchant}; processed ${result.created + result.duplicates} pending purchase(s).`,
+        formatIngestedExpenseConfirmation({
+          description: pending.description,
+          amount: pending.amount,
+          budgetName: budget.name,
+          totalToday: result.totalToday,
+        }),
+        expenseActionKeyboard(result.expenseId),
       );
     } catch {
       await reportFailure(reportOperation, "pending_merchant_processing");
